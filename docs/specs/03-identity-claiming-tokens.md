@@ -1,17 +1,17 @@
-# 03. Identity, claiming, tokens and revocation
+# 03. Identity, claiming and revocation
 
 Status: Draft 1. Depends on spec 01 and 02.
 
 **Principle:** identity comes from the device, tenancy from the server. Every device and gateway has its own key, generated at manufacture. No secret is shared between devices. Which org a device belongs to is a fact in the platform's database, never something the device asserts.
 
-The "company or project token" idea from the original brief survives in two places: as a **claim code** used once at installation (§3), and as the routing claims inside the short-lived tokens issued to direct devices (§4).
+The "company or project token" idea from the original brief survives in two places: as a **claim code** used once at installation (§3), and as order tokens for pre-assignment (§3.4). Devices carry no tenancy or routing credential (§4).
 
 ## 1. Identities
 
 | Identity | Credential | Proves itself by | Lifetime |
 |---|---|---|---|
 | Device (Thread) | P-256 factory key pair, private key on the device | Signing every batch (spec 02 §3) | Life of the device; rotatable Later |
-| Device (direct) | Same factory key | Signing a challenge to get a JWT (§4) | JWT 1–2 h |
+| Device (direct) | Same factory key | Signing every batch (§4, spec 02 §3) | Life of the device; rotatable Later |
 | Gateway | P-256 key + X.509 client certificate | Mutual TLS (§5) | Certificate 90 days, auto-renewed |
 | Factory jig | X.509 client certificate from the Factory CA | Mutual TLS to the registration API | Per production run, ≤ 30 days |
 | Platform user | Identity provider session (OIDC) | Login, MFA | IdP-managed |
@@ -102,48 +102,16 @@ For self-installed products the device itself could present an order token on fi
 
 Ingest answers batches from a registered but unclaimed device with `st = 2` (spec 01) or code 4 (spec 02), no acks, and a long `next`. Nothing is stored. The device keeps its outbox, so readings taken during installation are not lost if the claim completes before the outbox fills.
 
-## 4. Device tokens (direct path)
+## 4. Direct devices (no tokens)
 
-Specified now; built when the first direct (WiFi) product is (see CONTRADICTIONS.md C10).
+Direct (WiFi) devices authenticate exactly as Thread devices do: **every batch is a COSE_Sign1 signed by the device's factory key** (spec 02 §3), posted to `POST /v1/ingest`. Every reply is a COSE_Sign1 signed by the cloud reply key (spec 02 §3.5). There are no device tokens, no token service and no token keys. (Decided 14 Nov, CONTRADICTIONS.md C10.)
 
-### 4.1 Getting a token
+- **Freshness.** Replayed batches are inert: the signature covers the sequence numbers, so a replay is a duplicate (spec 06 §3). The nonce `n` binds a reply to its request (spec 02 §3.4).
+- **Polling.** A direct device with no samples that wants its mailbox sends a signed batch holding one heartbeat record (a record with an empty value map, spec 01 §4.1). There is no separate poll message.
+- **Routing.** Nothing about routing comes from the device's credential. The cell is the ingest hostname written at manufacture (§2.2); the Redpanda partition is the device serial (spec 06 §2); tenant and stream are resolved by workers from ownership boundaries (spec 05 §3.3).
+- **Cost.** One ES256 verification per batch at ingest, in the order of 50–100 µs of CPU; 100k devices uploading every 60 s is about 1,700 verifications a second, a fraction of one core.
 
-```
-POST /v1/device-auth/challenge            → { "nonce": "<opaque>", "exp": 1794614960 }
-POST /v1/device-auth/token                  body: COSE_Sign1 (device key, AAD "iotp-auth-v1")
-                                            payload: {0: dev, 1: nonce, 2: inc}
-                                          → { "token": "<JWT>", "exp": 1794621800 }
-```
-
-- The nonce is single-use (recorded in Redis for its 60 s life), so a captured token request cannot be replayed.
-- Devices with an X.509 certificate MAY authenticate by mutual TLS instead (Later).
-
-### 4.2 Token format
-
-JWS compact, header `{"alg": "ES256", "kid": "<key id>", "typ": "JWT"}`.
-
-```json
-{ "iss": "https://auth.uk1.example", "aud": "ingest.uk1", "sub": "dev:SN-00042",
-  "iat": 1794614900, "nbf": 1794614900, "exp": 1794621800,
-  "dev": "SN-00042", "cell": "uk1", "prod": "envsense", "tier": "standard", "ver": 3 }
-```
-
-| Claim | Meaning |
-|---|---|
-| `dev` | Device serial. The envelope's `dev` must equal it. |
-| `cell` | The cell that issued it. Ingest rejects tokens for another cell. |
-| `prod` | Product key. Informational for ingest; workers use the registry. |
-| `tier` | Allowance tier, so ingest can find the device's allowance without a lookup. |
-| `ver` | The device's credential version when the token was issued (§8). |
-
-- Lifetime: uniformly random between 3,600 and 7,200 s, so a fleet never expires at once.
-- Not in the token: org, groups, schema version, **stream**. Org and groups change and ingest does not need them; the schema comes from the envelope.
-
-> **Design note (C9).** The design doc's token includes `stream`. Routing a sample to a stream must depend on its sequence number, not on the token in force when it was uploaded (isolated moves, spec 05 §5). A `stream` claim invites exactly the routing bug the design doc warns against, and nothing needs it. This spec leaves it out.
-
-### 4.3 Validation at ingest
-
-Algorithm pinned to ES256 (the header's `alg` is checked, never trusted); `kid` is a current token key from core's JWKS (cached, refreshed every 5 minutes and at most once a minute on an unknown `kid`); `iss`, `aud`, `cell` match; `nbf` and `exp` valid with 60 s leeway; `ver` ≥ the device's current credential version; the device is `active`. A verified token is cached per pod by its SHA-256 until `exp`.
+> **Design note (C9, C10).** The design doc gives direct devices short-lived JWTs whose sample includes a `stream` claim. Routing must depend on sequence numbers and ownership boundaries, never on a credential issued before a move (spec 05 §5), so the claim was removed first (C9). With it gone the token carried nothing a signature does not, while adding a second identity mechanism to firmware and ingest, a token service on the path of every WiFi upload, and a need for the device to know the time before its first upload. A signature also proves who produced the data, and that proof stays with the batch through the outbox and the archive; a token proves only who held the connection.
 
 ## 5. Gateway certificates
 
@@ -161,8 +129,8 @@ Cheapest first; the first failure ends the request.
 |---|---|---|
 | 1 | Body size within the path's limit | 413 |
 | 2 | Content type; strict CBOR decode of the outer structure | 415 / 400 |
-| 3 | **Identity.** Direct: JWT (§4.3). Gateway: `X-Client-Identity` present, gateway active in the directory, `gw` matches; then per batch, COSE verification (spec 02 §3.1) | 401 / 403 / per-item code 2 |
-| 4 | Envelope header (spec 01 §6). `dev` equals the token's `dev` or the signing key's device | 400 / code 8 |
+| 3 | **Identity.** Gateway: `X-Client-Identity` present, gateway active in the directory, `gw` matches. Then, on both paths, per batch: COSE verification (spec 02 §3.1) | Direct 401; gateway 401 / 403, per-item code 2 |
+| 4 | Envelope header (spec 01 §6). `dev` equals the signing key's device | 400 / code 8 |
 | 5 | Device status from the directory: claimed and not revoked | 403 / codes 3–5 |
 | 6 | **One pipelined Redis round trip** per device: sequence state for each series in the batch (spec 06 §3), allowance (§6.1), pending mailbox count | — |
 | 7 | Allowance exceeded | 429 / code 6 |
@@ -184,7 +152,9 @@ A token bucket per device identity, held in Redis and checked in the round trip 
 
 ## 7. Server certificates for devices
 
-Devices and gateways verify ingest's TLS certificate against a **device-ingress CA** that we run, pinned in firmware, rather than the public WebPKI. Public root programmes change on timescales shorter than a device's life, and a device that cannot validate the server cannot be updated. The portal and API use public certificates on their own hostname. (Decision for Phase 1; recorded in CONTRADICTIONS.md C27.)
+Devices and gateways verify ingest's TLS certificate against a **device-ingress CA** that we run, pinned in firmware, rather than the public WebPKI. Public root programmes change on timescales shorter than a device's life, and a device that cannot validate the server cannot be updated. The same private PKI issues gateway client certificates (§5).
+
+The portal, the API and anything a browser opens use certificates from a public CA (Let's Encrypt, or Cloudflare edge certificates if Cloudflare fronts the portal) on their own hostnames. Device ingress hostnames are never behind a TLS-terminating proxy we do not run, because gateway mTLS must reach HAProxy (spec 02 §4). (Decided 14 Nov, CONTRADICTIONS.md C27; key ceremony and HSM choice are Phase 1.)
 
 ## 8. Revocation and the device directory
 
@@ -192,7 +162,7 @@ Devices and gateways verify ingest's TLS certificate against a **device-ingress 
 - Core maintains the **directory**: for every device and gateway, its serial, status, credential version, keys, product and tier. Ingest holds the whole directory in memory (100k devices with keys is a few MB) and never queries PostgreSQL.
 - Core writes each change to a Redis Stream (`dir:changes`) with a monotonically increasing directory version, and a full compressed snapshot (`dir:snapshot`) every 10 minutes and on demand.
 - Ingest loads the snapshot at start, then tails the stream. Every 15 s it also reads `dir:version`. A pod whose applied version is behind for more than 60 s, or that cannot reach Redis for 60 s, **fails closed**: it returns 503 and fails its health check so HAProxy drains it.
-- So a revocation reaches every ingest pod within seconds normally, and within 60 s in the worst case, or the pod stops taking traffic. Short JWT lifetimes are a further backstop on the direct path.
+- So a revocation reaches every ingest pod within seconds normally, and within 60 s in the worst case, or the pod stops taking traffic.
 
 > **Design note.** The design doc uses Redis pub/sub plus polling. A Redis Stream is not lost on reconnect the way pub/sub is, so the version check becomes a safety net rather than the main mechanism.
 
@@ -201,14 +171,13 @@ Devices and gateways verify ingest's TLS certificate against a **device-ingress 
 | Key | Where | Signs | Rotation | Verified by |
 |---|---|---|---|---|
 | Root CA (P-384) | HSM, offline | Intermediates only | 10 years | HAProxy (gateway chain), core |
-| Token key (P-256) | Online, core | Device JWTs | 30 days; published in JWKS 24 h before use, kept until its last token expires | Ingest |
 | Gateway CA (P-256) | Online, core | Gateway certificates | 1 year | HAProxy |
 | Reply key (P-256) | Online, ingest | Per-device replies | Yearly, via `key_rollover` (spec 02 §5.2) | Devices (pinned, no chain) |
 | Factory CA (P-256) | Online, core | Jig certificates | 1 year | Core |
 | Device-ingress CA (P-256) | HSM | Ingest TLS server certificates | 10 years (pinned in firmware) | Devices, gateways |
 | Firmware key (P-256) | HSM, with offline escrow | Firmware images; also the secure-boot / MCUboot key | Effectively never: it is in device bootloaders | Devices, gateways |
 
-- The HSM signs only intermediates and firmware, so it never becomes a bottleneck when a fleet re-authenticates after an outage.
+- The HSM signs only intermediates and firmware, so it never becomes a bottleneck.
 - Losing the firmware key is the one failure with no recovery. It has an offline escrow copy.
 - In the development stack every key is a file generated by `scripts/dev-keys.sh`. Development keys are never accepted outside development: production firmware pins production CAs.
 
@@ -217,7 +186,7 @@ Devices and gateways verify ingest's TLS certificate against a **device-ingress 
 | Threat | Mitigation |
 |---|---|
 | Captured Thread traffic replayed | Signatures cover sequence numbers; de-duplication makes replays inert |
-| Stolen direct-device token | 1–2 h lifetime; replays de-duplicated; RFC 8705 certificate binding for high-value products (Later) |
+| Captured direct-device traffic replayed | Same as Thread: signatures cover sequence numbers; replays are duplicates |
 | Key extracted from one device | Affects only that device: revoke it. No shared secrets. |
 | Forged registration | Jig mTLS bound to one batch manifest |
 | Guessing claim codes | 80 bits, rate-limited, only valid while unclaimed |

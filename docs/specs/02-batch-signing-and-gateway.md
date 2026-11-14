@@ -62,7 +62,7 @@ The header was parsed before verification only to find the key. Nothing parsed f
 | Path | Batch | Reply |
 |---|---|---|
 | Thread device via gateway | COSE_Sign1 by device key: **required** | COSE_Sign1 by cloud reply key: **required** |
-| Direct HTTPS device | Unsigned envelope with a bearer JWT (spec 03 §4). A signed batch MAY be sent instead of a JWT (Later). | Unsigned (TLS authenticates the server) |
+| Direct HTTPS device | COSE_Sign1 by device key: **required** (spec 03 §4) | COSE_Sign1 by cloud reply key: **required** |
 | Gateway's own telemetry | Unsigned envelope inside the mTLS-authenticated relay request (§4.2) | Unsigned, inside the relay reply |
 
 ### 3.3 Signing cost on the device
@@ -205,4 +205,3 @@ Pilot. The gateway firmware is built in Phase 1; this section fixes the contract
 ## 8. Open points
 
 - Payload confidentiality from the gateway (COSE_Encrypt0 inside the signature) is Later. Needed only if gateways are ever run by third parties.
-- Whether direct devices should also sign batches instead of using JWTs (simpler firmware, one code path). See CONTRADICTIONS.md C10.

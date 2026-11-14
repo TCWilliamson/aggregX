@@ -13,6 +13,7 @@ import (
 
 func u32(v uint32) *uint32 { return &v }
 
+// ExampleMinimal is spec 01 §11.1: a direct device sending two main records.
 func ExampleMinimal() *Envelope { // §11.1
 	return &Envelope{
 		V: 1, Dev: "SN-00042", Inc: 2876543210, Boot: 17, Schema: "envsense@3.2", Comp: 0,
@@ -25,6 +26,7 @@ func ExampleMinimal() *Envelope { // §11.1
 	}
 }
 
+// ExampleThread is spec 01 §11.2: a Thread device with every section kind.
 func ExampleThread() *Envelope { // §11.2
 	return &Envelope{
 		V: 1, Dev: "SN-00107", Inc: 912345678, Boot: 4, Schema: "envsense@3.2", Comp: 7,
@@ -44,6 +46,7 @@ func ExampleThread() *Envelope { // §11.2
 	}
 }
 
+// ExampleReply is spec 01 §11.3: a reply with acks, a resend request and a cfg mailbox item.
 func ExampleReply() *Reply { // §11.3
 	body, _ := Marshal(CfgBody{Ver: 12, Hash: []byte{0x5E, 0x0C, 0x1D, 0x2E, 0x3F, 0x40, 0x51, 0x62},
 		Set: map[uint32]any{3: uint64(5)}})
@@ -56,6 +59,7 @@ func ExampleReply() *Reply { // §11.3
 	}
 }
 
+// ExampleUptime is spec 01 §11.4: an envelope on the uptime timebase after a reboot.
 func ExampleUptime() *Envelope { // §11.4
 	return &Envelope{
 		V: 1, Dev: "SN-00107", Inc: 912345678, Boot: 5, Schema: "envsense@3.2", Comp: 7,
@@ -72,6 +76,7 @@ func ExampleUptime() *Envelope { // §11.4
 	}
 }
 
+// ExampleMoveBoundaryResult is spec 01 §11.5: a control upload carrying only a move_boundary result.
 func ExampleMoveBoundaryResult() *Envelope { // §11.5
 	return &Envelope{
 		V: 1, Dev: "SN-00107", Inc: 912345678, Boot: 5, Schema: "envsense@3.2", Comp: 7,
@@ -87,7 +92,7 @@ func ExampleMoveBoundaryResult() *Envelope { // §11.5
 func TestKey(n int64) *ecdsa.PrivateKey {
 	d := new(big.Int).SetInt64(0x1D0700000000 + n)
 	k := &ecdsa.PrivateKey{D: d}
-	k.PublicKey.Curve = elliptic.P256()
-	k.PublicKey.X, k.PublicKey.Y = elliptic.P256().ScalarBaseMult(d.Bytes())
+	k.Curve = elliptic.P256()
+	k.X, k.Y = elliptic.P256().ScalarBaseMult(d.Bytes())
 	return k
 }

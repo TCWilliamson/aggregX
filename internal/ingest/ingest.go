@@ -8,21 +8,25 @@ package ingest
 
 import (
 	"io"
+	"mime"
 	"net/http"
 
 	"iotp/internal/wire"
 )
 
+// Server is the ingest HTTP front end for one cell.
 type Server struct {
 	Cell string
 }
 
+// Register adds the device and gateway ingress routes to mux.
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/ingest", s.direct)
 	mux.HandleFunc("POST /v1/gw/relay", s.relay)
 }
 
 // direct handles POST /v1/ingest from direct-HTTPS devices (spec 01 §9).
+// The body is a COSE_Sign1 signed batch (spec 03 §4).
 func (s *Server) direct(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, wire.MaxDirectEnvelope+1))
 	if err != nil {
@@ -33,17 +37,29 @@ func (s *Server) direct(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	if r.Header.Get("Content-Type") != "application/cbor" {
+	if !isCOSESign1(r.Header.Get("Content-Type")) {
 		http.Error(w, "content type", http.StatusUnsupportedMediaType)
 		return
 	}
-	// TODO(phase0): JWT validation (spec 03 §4.3) before parsing.
-	if _, err := wire.DecodeHeader(body); err != nil {
+	msg, err := wire.ParseSign1(body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	// TODO(phase0): find the device key by msg.KID in the directory and verify
+	// (spec 02 §3.1) before trusting anything in the payload.
+	if _, err := wire.DecodeHeader(msg.Payload); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// TODO(phase0): directory status, Redis round trip, produce, mark, reply.
+	// TODO(phase0): directory status, Redis round trip, produce, mark, signed reply.
 	http.Error(w, "ingest pipeline not implemented", http.StatusNotImplemented)
+}
+
+// isCOSESign1 reports whether ct is application/cose; cose-type="cose-sign1" (spec 01 §1).
+func isCOSESign1(ct string) bool {
+	mt, params, err := mime.ParseMediaType(ct)
+	return err == nil && mt == "application/cose" && params["cose-type"] == "cose-sign1"
 }
 
 // relay handles POST /v1/gw/relay from gateways (spec 02 §4).

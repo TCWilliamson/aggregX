@@ -4,6 +4,7 @@ package health
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -15,10 +16,12 @@ type Check struct {
 	Fn   func(ctx context.Context) error
 }
 
-// Handler serves /healthz and /readyz for the given checks.
+// Register serves /healthz and /readyz for the given checks.
 func Register(mux *http.ServeMux, checks []Check) {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte("ok\n"))
+		if _, err := w.Write([]byte("ok\n")); err != nil {
+			slog.Debug("healthz write", "err", err)
+		}
 	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -47,6 +50,8 @@ func Register(mux *http.ServeMux, checks []Check) {
 		if !ok {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
-		json.NewEncoder(w).Encode(res)
+		if err := json.NewEncoder(w).Encode(res); err != nil {
+			slog.Debug("readyz write", "err", err)
+		}
 	})
 }

@@ -17,15 +17,18 @@ import (
 
 func files(dir string) ([]string, error) {
 	names, err := fs.Glob(migrations.FS, dir+"/*.sql")
+	if err != nil {
+		return nil, fmt.Errorf("glob %s: %w", dir, err)
+	}
 	sort.Strings(names)
-	return names, err
+	return names, nil
 }
 
 // Postgres applies migrations/postgres/*.sql. Each file manages its own transaction.
 func Postgres(ctx context.Context, pg *pgxpool.Pool) error {
 	if _, err := pg.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
-		return err
+		return fmt.Errorf("create schema_migrations: %w", err)
 	}
 	names, err := files("postgres")
 	if err != nil {
@@ -34,18 +37,21 @@ func Postgres(ctx context.Context, pg *pgxpool.Pool) error {
 	for _, n := range names {
 		var exists bool
 		if err := pg.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`, n).Scan(&exists); err != nil {
-			return err
+			return fmt.Errorf("%s: check applied: %w", n, err)
 		}
 		if exists {
 			continue
 		}
-		sql, _ := fs.ReadFile(migrations.FS, n)
+		sql, err := fs.ReadFile(migrations.FS, n)
+		if err != nil {
+			return fmt.Errorf("%s: %w", n, err)
+		}
 		// Simple protocol (no args) allows multiple statements per Exec.
 		if _, err := pg.Exec(ctx, string(sql)); err != nil {
 			return fmt.Errorf("%s: %w", n, err)
 		}
 		if _, err := pg.Exec(ctx, `INSERT INTO schema_migrations (version) VALUES ($1)`, n); err != nil {
-			return err
+			return fmt.Errorf("%s: record applied: %w", n, err)
 		}
 		slog.Info("applied migration", "file", n)
 	}
@@ -61,7 +67,10 @@ func ClickHouse(ctx context.Context, ch driver.Conn) error {
 		return err
 	}
 	for _, n := range names {
-		sql, _ := fs.ReadFile(migrations.FS, n)
+		sql, err := fs.ReadFile(migrations.FS, n)
+		if err != nil {
+			return fmt.Errorf("%s: %w", n, err)
+		}
 		for _, stmt := range splitStatements(string(sql)) {
 			if err := ch.Exec(ctx, stmt); err != nil {
 				return fmt.Errorf("%s: %w\n%s", n, err, stmt)

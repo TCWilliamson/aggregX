@@ -3,6 +3,8 @@ package deps
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
@@ -14,6 +16,7 @@ import (
 	"iotp/internal/health"
 )
 
+// Deps holds the clients a run mode opened; unused ones are nil.
 type Deps struct {
 	PG    *pgxpool.Pool
 	Redis *redis.Client
@@ -21,35 +24,41 @@ type Deps struct {
 	CH    driver.Conn
 }
 
+// Need says which services a run mode uses.
+type Need struct {
+	PG, Redis, Kafka, CH bool
+}
+
 // Open connects to the services a run mode needs. Connections are lazy where the
 // client library allows, so a missing service shows up in /readyz, not as a crash.
-func Open(ctx context.Context, c *config.Config, pg, rds, kafka, ch bool) (*Deps, error) {
+func Open(ctx context.Context, c *config.Config, need Need) (*Deps, error) {
 	d := &Deps{}
 	var err error
-	if pg {
+	if need.PG {
 		if d.PG, err = pgxpool.New(ctx, c.PGDSN); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("postgres: %w", err)
 		}
 	}
-	if rds {
+	if need.Redis {
 		d.Redis = redis.NewClient(&redis.Options{Addr: c.RedisAddr})
 	}
-	if kafka {
+	if need.Kafka {
 		if d.Kafka, err = kgo.NewClient(kgo.SeedBrokers(c.Brokers...)); err != nil {
-			return nil, err
+			return nil, errors.Join(fmt.Errorf("redpanda: %w", err), d.Close())
 		}
 	}
-	if ch {
+	if need.CH {
 		if d.CH, err = clickhouse.Open(&clickhouse.Options{
 			Addr: []string{c.CHAddr},
 			Auth: clickhouse.Auth{Database: "default", Username: c.CHUser, Password: c.CHPassword},
 		}); err != nil {
-			return nil, err
+			return nil, errors.Join(fmt.Errorf("clickhouse: %w", err), d.Close())
 		}
 	}
 	return d, nil
 }
 
+// Checks returns one readiness check per opened client.
 func (d *Deps) Checks() []health.Check {
 	var cs []health.Check
 	if d.PG != nil {
@@ -67,17 +76,24 @@ func (d *Deps) Checks() []health.Check {
 	return cs
 }
 
-func (d *Deps) Close() {
+// Close closes every opened client and returns the joined close errors.
+func (d *Deps) Close() error {
+	var errs []error
 	if d.PG != nil {
 		d.PG.Close()
 	}
 	if d.Redis != nil {
-		d.Redis.Close()
+		if err := d.Redis.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("redis close: %w", err))
+		}
 	}
 	if d.Kafka != nil {
 		d.Kafka.Close()
 	}
 	if d.CH != nil {
-		d.CH.Close()
+		if err := d.CH.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("clickhouse close: %w", err))
+		}
 	}
+	return errors.Join(errs...)
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 )
 
+// Config holds every setting a run mode can use.
 type Config struct {
 	RunMode    string // ingest | core | workers | migrate
 	HTTPAddr   string
@@ -29,6 +30,7 @@ func env(k, def string) string {
 	return def
 }
 
+// Load reads the environment for the given run mode and rejects unknown modes.
 func Load(mode string) (*Config, error) {
 	host, _ := os.Hostname()
 	c := &Config{

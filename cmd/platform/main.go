@@ -8,7 +8,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -44,51 +46,59 @@ func main() {
 func run(ctx context.Context, cfg *config.Config) error {
 	switch cfg.RunMode {
 	case "migrate":
-		d, err := deps.Open(ctx, cfg, true, false, false, true)
-		if err != nil {
-			return err
-		}
-		defer d.Close()
-		if err := migrate.Postgres(ctx, d.PG); err != nil {
-			return err
-		}
-		return migrate.ClickHouse(ctx, d.CH)
+		return withDeps(ctx, cfg, deps.Need{PG: true, CH: true}, func(d *deps.Deps) error {
+			if err := migrate.Postgres(ctx, d.PG); err != nil {
+				return fmt.Errorf("migrate postgres: %w", err)
+			}
+			if err := migrate.ClickHouse(ctx, d.CH); err != nil {
+				return fmt.Errorf("migrate clickhouse: %w", err)
+			}
+			return nil
+		})
 	case "ingest":
 		// Ingest talks only to Redis and Redpanda (design doc, spec 03 §8).
-		d, err := deps.Open(ctx, cfg, false, true, true, false)
-		if err != nil {
-			return err
-		}
-		defer d.Close()
-		mux := http.NewServeMux()
-		health.Register(mux, d.Checks())
-		(&ingest.Server{Cell: cfg.Cell}).Register(mux)
-		return serve(ctx, cfg.HTTPAddr, mux)
-	case "core":
-		d, err := deps.Open(ctx, cfg, true, true, false, true)
-		if err != nil {
-			return err
-		}
-		defer d.Close()
-		mux := http.NewServeMux()
-		health.Register(mux, d.Checks())
-		mux.HandleFunc("GET /v1/version", func(w http.ResponseWriter, _ *http.Request) {
-			w.Write([]byte(`{"service":"core","cell":"` + cfg.Cell + `"}`))
+		return withDeps(ctx, cfg, deps.Need{Redis: true, Kafka: true}, func(d *deps.Deps) error {
+			mux := http.NewServeMux()
+			health.Register(mux, d.Checks())
+			(&ingest.Server{Cell: cfg.Cell}).Register(mux)
+			return serve(ctx, cfg.HTTPAddr, mux)
 		})
-		// TODO(phase0/1): registry, claims, directory publisher, query layer, API.
-		return serve(ctx, cfg.HTTPAddr, mux)
+	case "core":
+		return withDeps(ctx, cfg, deps.Need{PG: true, Redis: true, CH: true}, func(d *deps.Deps) error {
+			mux := http.NewServeMux()
+			health.Register(mux, d.Checks())
+			mux.HandleFunc("GET /v1/version", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(map[string]string{"service": "core", "cell": cfg.Cell}); err != nil {
+					slog.Debug("version write", "err", err)
+				}
+			})
+			// TODO(phase0/1): registry, claims, directory publisher, query layer, API.
+			return serve(ctx, cfg.HTTPAddr, mux)
+		})
 	case "workers":
-		d, err := deps.Open(ctx, cfg, true, true, true, true)
-		if err != nil {
-			return err
-		}
-		defer d.Close()
-		mux := http.NewServeMux()
-		health.Register(mux, d.Checks())
-		// TODO(phase0): wk-store and wk-archive consumers (spec 06 §4, §10), rollup worker.
-		return serve(ctx, cfg.HTTPAddr, mux)
+		return withDeps(ctx, cfg, deps.Need{PG: true, Redis: true, Kafka: true, CH: true}, func(d *deps.Deps) error {
+			mux := http.NewServeMux()
+			health.Register(mux, d.Checks())
+			// TODO(phase0): wk-store and wk-archive consumers (spec 06 §4, §10), rollup worker.
+			return serve(ctx, cfg.HTTPAddr, mux)
+		})
 	}
-	return errors.New("unreachable")
+	return fmt.Errorf("unknown run mode %q", cfg.RunMode)
+}
+
+// withDeps opens the clients a run mode needs, runs fn, and closes them.
+func withDeps(ctx context.Context, cfg *config.Config, need deps.Need, fn func(*deps.Deps) error) (err error) {
+	d, err := deps.Open(ctx, cfg, need)
+	if err != nil {
+		return fmt.Errorf("open dependencies: %w", err)
+	}
+	defer func() {
+		if cerr := d.Close(); cerr != nil {
+			err = errors.Join(err, cerr)
+		}
+	}()
+	return fn(d)
 }
 
 func serve(ctx context.Context, addr string, h http.Handler) error {
@@ -98,10 +108,14 @@ func serve(ctx context.Context, addr string, h http.Handler) error {
 	slog.Info("listening", "addr", addr)
 	select {
 	case <-ctx.Done():
-		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// The parent is already cancelled; keep its values but give shutdown its own deadline.
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		return srv.Shutdown(sctx)
+		if err := srv.Shutdown(sctx); err != nil {
+			return fmt.Errorf("shutdown: %w", err)
+		}
+		return nil
 	case err := <-errc:
-		return err
+		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 }

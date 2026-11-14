@@ -6,16 +6,16 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"fmt"
 	"math/big"
 
 	"github.com/fxamacker/cbor/v2"
 )
 
-// External AAD values (spec 02 §3, §3.5, spec 03 §4.1).
+// External AAD values (spec 02 §3, §3.5).
 var (
 	AADBatch = []byte("iotp-batch-v1")
 	AADReply = []byte("iotp-reply-v1")
-	AADAuth  = []byte("iotp-auth-v1")
 )
 
 const (
@@ -38,7 +38,7 @@ func KID(pub *ecdsa.PublicKey) ([]byte, error) {
 func UncompressedPoint(pub *ecdsa.PublicKey) ([]byte, error) {
 	k, err := pub.ECDH()
 	if err != nil {
-		return nil, err
+		return nil, errf("bad_public_key", "%v", err)
 	}
 	return k.Bytes(), nil
 }
@@ -88,7 +88,7 @@ func Sign1(key *ecdsa.PrivateKey, payload, aad []byte) ([]byte, error) {
 	h := sha256.Sum256(tbs)
 	r, s, err := ecdsa.Sign(rand.Reader, key, h[:])
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("wire: sign: %w", err)
 	}
 	sig := make([]byte, 64)
 	r.FillBytes(sig[:32])

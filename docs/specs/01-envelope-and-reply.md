@@ -2,7 +2,7 @@
 
 Status: Draft 1. Normative grammar: `spec/wire/envelope.cddl`. Reference encoder: `internal/wire` (Go).
 
-This spec defines what a device sends on every upload (the **envelope**) and what it gets back (the **reply**). The same envelope travels on both paths into the platform: direct HTTPS from WiFi devices, and through a gateway from Thread devices (where it is wrapped in a COSE_Sign1 signature, see spec 02).
+This spec defines what a device sends on every upload (the **envelope**) and what it gets back (the **reply**). The same envelope travels on both paths into the platform, direct HTTPS from WiFi devices and through a gateway from Thread devices, and on both it is wrapped in a COSE_Sign1 signature by the device key (spec 02 §3, spec 03 §4).
 
 ## 1. Goals and non-goals
 
@@ -15,7 +15,7 @@ Non-goals (v1): positional (schema-ordered) value encoding, delta compression be
 - CBOR (RFC 8949). Maps use **small unsigned integer keys**; the names in this document are for humans only and never go on the wire.
 - Encoders MUST use deterministic encoding for integers, lengths and map key order (RFC 8949 §4.2.1). Floats SHOULD use the shortest type that holds the value exactly. The Go reference encoder is byte-exact against the golden vectors; other encoders are checked by decoded value.
 - Decoders MUST accept any well-formed encoding and MUST reject: duplicate map keys, nesting deeper than 16 levels, trailing bytes, and envelope keys above 17. Unknown keys inside a body section are passed to the workers, which quarantine (spec 04 §7).
-- Content type on HTTPS: `application/cbor` for an unsigned envelope, `application/cose; cose-type="cose-sign1"` for a signed one.
+- Content type of a direct upload: `application/cose; cose-type="cose-sign1"` (a signed batch). Gateway relay requests are `application/cbor` (spec 02 §4).
 - Floats: encoders SHOULD use the shortest float that round-trips the value (half, single, double). Decoders MUST accept all three.
 
 ## 3. Envelope
@@ -23,7 +23,7 @@ Non-goals (v1): positional (schema-ordered) value encoding, delta compression be
 | Key | Name | Type | Req | Meaning |
 |---:|---|---|:-:|---|
 | 0 | `v` | uint | ✓ | Envelope version. This spec is `1`. |
-| 1 | `dev` | tstr | ✓ | Device serial, 1–32 chars `[A-Z0-9-]`. Must match the token (direct) or the signing key's device (signed). |
+| 1 | `dev` | tstr | ✓ | Device serial, 1–32 chars `[A-Z0-9-]`. Must match the signing key's device (spec 02 §3.1). |
 | 2 | `inc` | uint | ✓ | Incarnation, 32-bit, non-zero (§5.3). |
 | 3 | `boot` | uint | ✓ | Boot counter, 32-bit, incremented on every boot and persisted. |
 | 4 | `schema` | tstr | ✓ | Product schema the main records use, `name@major.minor`, e.g. `envsense@3.2` (spec 04). |
@@ -240,10 +240,10 @@ Device-level outcomes are always in the reply's `st`. HTTP status is the transpo
 |---|---|---|---|
 | 200 | 0 | Accepted (or all duplicates) | Process acks and items |
 | 400 | — | Not CBOR, unknown `v`, missing or unknown header key, `dev` malformed | Do not retry the same bytes more than 3 times. Then discard the batch and record a `dropped` event (reason 2). |
-| 401 | — | Token missing, expired or invalid | Get a new token, retry |
+| 401 | — | Body is not a COSE_Sign1, or its signature does not verify against a key of the device | Firmware or key fault: as 400 |
 | 403 | 2 or 3 | Unclaimed or revoked | Keep data. Retry after `next` (long). |
 | 413 | — | Over size limit | Split and retry |
-| 415 | — | Wrong content type | Firmware bug: as 400 |
+| 415 | — | Content type is not `application/cose; cose-type="cose-sign1"` | Firmware bug: as 400 |
 | 429 | 1 | Allowance exceeded | Keep data. Wait `next`. |
 | 503 | 4 | Platform cannot accept writes (stream buffer down) | Keep data. Wait `Retry-After` with jitter. |
 

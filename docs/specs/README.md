@@ -10,7 +10,7 @@ These specs turn the design doc into contracts that code, firmware and tests can
 |---|------|---------------|
 | 01 | [Envelope and reply](01-envelope-and-reply.md) | CBOR wire format of every upload and every reply: fields, integer keys, timestamps, sequence series, acks, mailbox items, size limits, HTTP status codes, worked examples |
 | 02 | [Batch signing and gateway relay](02-batch-signing-and-gateway.md) | COSE_Sign1 profile for device batches and cloud replies, the gateway relay protocol (HTTPS side and CoAP side), the gateway trust model and its residual risks |
-| 03 | [Identity, claiming, tokens and revocation](03-identity-claiming-tokens.md) | Factory keys, registration, claim tokens, device JWTs (direct path), gateway certificates, revocation, signing-key hierarchy |
+| 03 | [Identity, claiming and revocation](03-identity-claiming-tokens.md) | Factory keys, registration, claim codes, direct devices (signed, no tokens), gateway certificates, revocation, CAs, signing-key hierarchy |
 | 04 | [Schema registry and codegen](04-schema-registry-and-codegen.md) | Registry file format, channels, config, events, slots and sub-modules, composition epochs, versioning rules, Go and C code generation |
 | 05 | [Tenancy and data streams](05-tenancy-and-streams.md) | Entities, data streams, sample routing, visibility windows, moves including `move_boundary`, PostgreSQL tables |
 | 06 | [Telemetry storage and exactly-once](06-telemetry-storage-and-exactly-once.md) | Redpanda topics, ClickHouse tables, rollups, the end-to-end exactly-once contract and its invariants, reconciliation |
@@ -41,7 +41,7 @@ If a document and a machine-readable source disagree, the machine-readable sourc
 |------|---------|
 | Device | A physical unit with a factory key. Permanent identity: its serial. |
 | Gateway | A Thread border router that we make and run. Relays signed device batches over mutually authenticated HTTPS. |
-| Direct device | A device that talks HTTPS to ingest itself (WiFi). Authenticates with a short-lived JWT. |
+| Direct device | A device that talks HTTPS to ingest itself (WiFi). Signs every batch with its factory key, like a Thread device (spec 03 §4). |
 | Envelope | One upload's logical content (spec 01). |
 | Batch | One envelope as sent on the wire, signed (COSE_Sign1) or not. |
 | Series | An independent sequence-number counter on a device: main records, events, high-rate blocks, and one per module slot. |

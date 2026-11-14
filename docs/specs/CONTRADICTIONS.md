@@ -17,13 +17,13 @@ Severity: **High** = would lose, duplicate or leak data, or open a security hole
 | C7 | Medium | Redpanda keyed by stream id | Fixed in spec (keyed by device) |
 | C8 | Low | Archive partitioning stated two ways, one impossible | Fixed in spec (time + device hash) |
 | C9 | Medium | JWT carries a `stream` claim | Fixed in spec (removed) |
-| C10 | Medium | Direct/JWT path tagged Pilot, but pilot is Thread-only | **Decision** |
+| C10 | Medium | Direct/JWT path tagged Pilot, but pilot is Thread-only | Closed 14 Nov (option 3: every device signs, no JWTs) |
 | C11 | Medium | Ingest rejects disallowed schemas, stranding device data | Fixed in spec (accept and quarantine) |
 | C12 | Low | Out-of-range values quarantined | Fixed in spec (stored, flagged) |
 | C13 | High | Factory reset restarts counters, new data discarded as duplicates | Fixed in spec (incarnation id) |
 | C14 | Medium | De-dup state "per stream" but sequence numbers are per device | Fixed in spec (per device, incarnation, series) |
 | C15 | Medium | Session events: one message or two? | Fixed in spec (sent once, complete) |
-| C16 | Medium | "Go and C generated from one spec file" | **Decision** |
+| C16 | Medium | "Go and C generated from one spec file" | Closed 14 Nov (option 1) |
 | C17 | Medium | Gateway time to devices is unsigned | Mitigated; residual risk documented |
 | C18 | Medium | Order of worker side effects before offset commit | Fixed in spec |
 | C19 | Low | Ingest must build mailbox replies without PostgreSQL | Fixed in spec |
@@ -34,7 +34,7 @@ Severity: **High** = would lose, duplicate or leak data, or open a security hole
 | C24 | Medium | Data from unclaimed devices undefined | Fixed in spec (not stored, device keeps it) |
 | C25 | Medium | Mailbox ids are strings | Fixed in spec (per-device monotonic integers) |
 | C26 | Low | Revocation via Redis pub/sub | Improved (Redis Stream + version poll) |
-| C27 | Medium | Which CA devices trust for ingest TLS | **Decision** (Phase 1) |
+| C27 | Medium | Which CA devices trust for ingest TLS | Closed 14 Nov (own CA for devices, public CA for portal/API) |
 | C28 | Medium | Pilot hardware | **Proposed**, awaiting tom's confirmation |
 
 ## Details
@@ -109,7 +109,7 @@ Severity: **High** = would lose, duplicate or leak data, or open a security hole
 
 **Spec:** Removed (spec 03 §4.2).
 
-### C10. Is the direct (WiFi/JWT) path in the pilot? (Decision)
+### C10. Is the direct (WiFi/JWT) path in the pilot? (Closed 14 Nov: option 3)
 
 **Design doc:** "Device identity" is tagged Pilot and specifies JWTs for direct devices; "Phase 3" lists "Second SDK target … (e.g. ESP32 over WiFi with JWTs)"; the first product is Thread.
 
@@ -117,6 +117,10 @@ Severity: **High** = would lose, duplicate or leak data, or open a security hole
 1. **Recommended:** specify the direct path now (done), build ingest support and simulator coverage in Phase 0/1 because it is cheap on the server, but no device SDK for it until Phase 3.
 2. Defer all of it to Phase 3.
 3. Drop JWTs: direct devices sign batches exactly like Thread devices (COSE_Sign1 over HTTPS). One code path in firmware and ingest, no token service, no clock needed for token expiry. Costs ~80 bytes and one signature per upload, irrelevant on WiFi. Worth considering seriously; it removes a whole subsystem.
+
+**14 Nov:** now recommending option 3. A token proves who is connected; a signature proves who produced the data, and that proof stays attached to the batch through the outbox, any relay and the archive. Thread devices must sign anyway (the gateway is not trusted), so tokens would be a second identity mechanism in firmware, ingest and the claim flow. Tokens also need the device to know the time before its first upload and a token-issuing service that becomes a dependency of every WiFi upload. tom, 14 Nov: "fine with all devices signing". He asked whether tokens were wanted for efficient routing: they were not needed for it, because routing never uses the device credential (cell from the factory-set hostname, partition from the serial, stream from ownership boundaries; spec 03 §4).
+
+**Done:** spec 03 §4 now specifies signed direct uploads and the token service, token key and JWT tests are gone; replies to direct devices are signed too, so firmware has one verify path and a device deletes data only on a signature-verified ack on every path (spec 01 §7.1). A direct device polls by sending a heartbeat record. Direct uploads use content type `application/cose; cose-type="cose-sign1"`; the ingest skeleton enforces it.
 
 ### C11. Rejecting disallowed schemas at ingest (Medium)
 
@@ -154,7 +158,9 @@ Severity: **High** = would lose, duplicate or leak data, or open a security hole
 
 **Spec:** Events are sent once, complete, with start and duration; optional `session_progress` events for long sessions (spec 01 §4.4).
 
-### C16. Code generation (Decision)
+### C16. Code generation (Closed 14 Nov: option 1)
+
+tom, 14 Nov: fine with the C and Go code being whatever makes sense. Option 1 stands as specified in spec 04 §8.
 
 **Design doc:** Phase 0 ("The envelope and schemas are defined once in a spec file, with Go and C code generated from it").
 
@@ -226,11 +232,17 @@ Phase 0 (3–4 weeks) holds the specs, the hardware decisions, the repo and Comp
 
 **Spec:** Changes on a Redis Stream (not lost on reconnect like pub/sub), plus version polling and fail-closed (spec 03 §8).
 
-### C27. Which CA devices trust (Decision, Phase 1)
+### C27. Which CA devices trust (Closed 14 Nov)
 
 **Design doc:** not covered.
 
 **Recommendation:** a private device-ingress CA pinned in firmware for device and gateway hostnames; public certificates for the portal and API (spec 03 §7). Public root programmes change faster than a device's service life.
+
+**14 Nov:** tom asked whether something well trusted such as Cloudflare would do. Proposed split:
+- **Portal, API and anything a browser opens:** a public CA (Let's Encrypt, or Cloudflare's edge certificates if Cloudflare fronts the portal). Browsers already trust these and renewal is automatic.
+- **Device and gateway ingress:** our own private CA, root and intermediates kept offline, with the root's public key pinned in firmware. Devices may run 10+ years; public roots are rotated and distrusted on a 2–5 year cycle, and a device whose trusted root is withdrawn can no longer connect to receive the update that would fix it. A private CA also lets us issue gateway client certificates (spec 02 §2), which public CAs no longer do for this use. Cloudflare must not terminate device TLS, because ingress depends on mTLS reaching HAProxy (spec 02 §4).
+
+tom, 14 Nov: "use whatever CA you recommend". Adopted as above (spec 03 §7). Key ceremony and HSM choice remain Phase 1 work.
 
 ### C28. Pilot hardware (Decision, Phase 0)
 

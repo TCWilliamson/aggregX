@@ -48,9 +48,9 @@ Go tests that run the ingest binary against Compose services and assert status, 
 | 2.8 | Redpanda stopped | 503 with `Retry-After`; no ack; Redis unchanged |
 | 2.9 | Redpanda stopped after produce, before ack returns (timeout) | 503; no ack; retry later is accepted |
 | 2.10 | Redis stopped | 503 |
-| 2.11 | Expired / wrong-aud / wrong-cell / unknown-kid / alg-none JWT | 401 |
-| 2.12 | JWT `ver` below current credential version | 401 |
-| 2.13 | Envelope `dev` ≠ token `dev` | 400 |
+| 2.11 | Direct body is an unsigned envelope; unknown `kid`; bad signature; wrong AAD | 401 |
+| 2.12 | Signature by a `revoked` key; by a `retiring` key | 401; 200 |
+| 2.13 | Envelope `dev` ≠ the signing key's device | 400 |
 | 2.14 | Revoked device; unclaimed device | 403, `st 3` / `st 2`, no record |
 | 2.15 | Allowance exceeded | 429, `st 1`, `next` > 0, no record |
 | 2.16 | 65 KiB body | 413 |

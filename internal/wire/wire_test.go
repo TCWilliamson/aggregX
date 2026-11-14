@@ -44,49 +44,72 @@ func TestExamplesRoundTrip(t *testing.T) {
 			t.Logf("%d bytes\n%s\n%s", len(b), hex.EncodeToString(b), diag)
 
 			if strings.HasPrefix(ex.name, "envelope") {
-				e, h, err := DecodeEnvelope(b)
-				if err != nil {
-					t.Fatalf("decode: %v", err)
-				}
-				if len(h.Spans) == 0 && !h.HasMRes {
-					t.Fatal("no spans")
-				}
-				b2, err := e.Encode()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !bytes.Equal(b, b2) {
-					t.Fatalf("not deterministic:\n%x\n%x", b, b2)
-				}
+				envelopeRoundTrip(t, b)
 			} else {
-				r, err := DecodeReply(b)
-				if err != nil {
-					t.Fatal(err)
-				}
-				b2, _ := r.Encode()
-				if !bytes.Equal(b, b2) {
-					t.Fatalf("reply not deterministic")
-				}
+				replyRoundTrip(t, b)
 			}
 			golden(t, ex.name, b)
 		})
 	}
 }
 
+// envelopeRoundTrip checks spec 01 §2: decode then re-encode gives identical bytes.
+func envelopeRoundTrip(t *testing.T, b []byte) {
+	t.Helper()
+	e, h, err := DecodeEnvelope(b)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(h.Spans) == 0 && !h.HasMRes {
+		t.Fatal("no spans")
+	}
+	b2, err := e.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(b, b2) {
+		t.Fatalf("not deterministic:\n%x\n%x", b, b2)
+	}
+}
+
+func replyRoundTrip(t *testing.T, b []byte) {
+	t.Helper()
+	r, err := DecodeReply(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2, err := r.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(b, b2) {
+		t.Fatalf("reply not deterministic")
+	}
+}
+
+// writeVector writes a golden vector under -update. Vectors are committed
+// source files, so they get ordinary source permissions.
+func writeVector(t *testing.T, name string, data []byte) {
+	t.Helper()
+	//nolint:gosec // G306: committed golden vectors are world-readable source files.
+	if err := os.WriteFile(filepath.Join(vectorDir, name), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func golden(t *testing.T, name string, b []byte) {
 	t.Helper()
 	path := filepath.Join(vectorDir, name+".cbor")
-	diag, _ := cbor.Diagnose(b)
+	diag, err := cbor.Diagnose(b)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if *update {
-		if err := os.WriteFile(path, b, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(vectorDir, name+".diag"), []byte(diag+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeVector(t, name+".cbor", b)
+		writeVector(t, name+".diag", []byte(diag+"\n"))
 		return
 	}
-	want, err := os.ReadFile(path)
+	want, err := os.ReadFile(path) //nolint:gosec // G304: path is built from the fixed vector directory and a test-table name.
 	if err != nil {
 		t.Fatalf("missing vector (run go test ./internal/wire -update): %v", err)
 	}
@@ -167,9 +190,8 @@ func TestInvalidEnvelopes(t *testing.T) {
 				t.Fatalf("want %s, got %s (%v)", c.code, we.Code, err)
 			}
 			if *update {
-				p := filepath.Join(vectorDir, "invalid_envelope_"+c.name)
-				os.WriteFile(p+".cbor", c.data, 0o644)
-				os.WriteFile(p+".error", []byte(c.code+"\n"), 0o644)
+				writeVector(t, "invalid_envelope_"+c.name+".cbor", c.data)
+				writeVector(t, "invalid_envelope_"+c.name+".error", []byte(c.code+"\n"))
 			}
 		})
 	}
@@ -221,13 +243,13 @@ func TestCOSE(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Verify(&key.PublicKey, AADBatch); err != nil {
+	if err = m.Verify(&key.PublicKey, AADBatch); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Verify(&key.PublicKey, AADReply); err == nil {
+	if err = m.Verify(&key.PublicKey, AADReply); err == nil {
 		t.Fatal("wrong AAD must fail")
 	}
-	if err := m.Verify(&TestKey(2).PublicKey, AADBatch); err == nil {
+	if err = m.Verify(&TestKey(2).PublicKey, AADBatch); err == nil {
 		t.Fatal("wrong key must fail")
 	}
 	// Flip one payload bit.
@@ -242,16 +264,19 @@ func TestCOSE(t *testing.T) {
 		t.Fatal("tampered payload must fail")
 	}
 	if *update {
-		os.WriteFile(filepath.Join(vectorDir, "cose_batch_valid_testkey1.cbor"), signed, 0o644)
-		pub, _ := UncompressedPoint(&key.PublicKey)
-		os.WriteFile(filepath.Join(vectorDir, "cose_batch_valid_testkey1.pub"), []byte(hex.EncodeToString(pub)+"\n"), 0o644)
+		writeVector(t, "cose_batch_valid_testkey1.cbor", signed)
+		pub, err := UncompressedPoint(&key.PublicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeVector(t, "cose_batch_valid_testkey1.pub", []byte(hex.EncodeToString(pub)+"\n"))
 	}
 }
 
 func TestCOSEStoredVectorVerifies(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(vectorDir, "cose_batch_valid_testkey1.cbor"))
 	if err != nil {
-		t.Skip("vector not generated yet")
+		t.Fatalf("missing vector (spec 07 §2): %v", err)
 	}
 	m, err := ParseSign1(b)
 	if err != nil {
@@ -292,7 +317,7 @@ func TestCOSERejects(t *testing.T) {
 				t.Fatal("must reject")
 			}
 			if *update {
-				os.WriteFile(filepath.Join(vectorDir, "invalid_"+name+".cbor"), b, 0o644)
+				writeVector(t, "invalid_"+name+".cbor", b)
 			}
 		})
 	}

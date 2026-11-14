@@ -9,6 +9,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -78,9 +79,9 @@ func set(xs ...string) map[string]bool {
 }
 
 func load(path string) (*Schema, error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // G304: reading the schema files named on the command line is the tool's job.
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read schema: %w", err)
 	}
 	var s Schema
 	dec := yaml.NewDecoder(strings.NewReader(string(b)))
@@ -92,85 +93,105 @@ func load(path string) (*Schema, error) {
 	return &s, nil
 }
 
+// problems collects rule violations for one schema file.
+type problems struct {
+	path string
+	errs []string
+}
+
+func (p *problems) add(f string, a ...any) {
+	p.errs = append(p.errs, fmt.Sprintf("%s: "+f, append([]any{p.path}, a...)...))
+}
+
 // check applies the structural rules of spec 04 §2-§3.
 func check(s *Schema) []string {
-	var errs []string
-	bad := func(f string, a ...any) { errs = append(errs, fmt.Sprintf("%s: "+f, append([]any{s.path}, a...)...)) }
+	p := &problems{path: s.path}
 	if !nameRE.MatchString(s.Schema) {
-		bad("schema name %q invalid", s.Schema)
+		p.add("schema name %q invalid", s.Schema)
 	}
 	if !kinds[s.Kind] {
-		bad("kind %q invalid", s.Kind)
+		p.add("kind %q invalid", s.Kind)
 	}
 	if !versionRE.MatchString(s.Version) {
-		bad("version %q must be \"major.minor\" (quote it in YAML)", s.Version)
+		p.add("version %q must be \"major.minor\" (quote it in YAML)", s.Version)
+	}
+	checkChannels(p, s)
+	for _, sl := range s.Slots {
+		if s.Kind != "product" {
+			p.add("only products have slots")
+		}
+		if sl.Slot < 1 || sl.Slot > 239 || !keyRE.MatchString(sl.Key) {
+			p.add("slot %d/%s invalid", sl.Slot, sl.Key)
+		}
+	}
+	checkFields(p, "config", s.Config, 1, 65535)
+	checkFields(p, "command", s.Commands, 1, 65535)
+	checkFields(p, "event", s.Events, 1000, 65535)
+	return p.errs
+}
+
+// checkChannels applies spec 04 §2.2: id ranges, uniqueness, types, aggregates, classes.
+func checkChannels(p *problems, s *Schema) {
+	lo, hi := 1, 32767
+	if s.Kind == "sys" {
+		lo, hi = 32768, 65535
 	}
 	ids, keys := map[int]bool{}, map[string]bool{}
 	for _, c := range s.Channels {
-		lo, hi := 1, 32767
-		if s.Kind == "sys" {
-			lo, hi = 32768, 65535
-		}
 		if c.ID < lo || c.ID > hi {
-			bad("channel %s id %d outside %d..%d", c.Key, c.ID, lo, hi)
+			p.add("channel %s id %d outside %d..%d", c.Key, c.ID, lo, hi)
 		}
 		if ids[c.ID] || keys[c.Key] {
-			bad("channel %s/%d duplicated", c.Key, c.ID)
+			p.add("channel %s/%d duplicated", c.Key, c.ID)
 		}
 		ids[c.ID], keys[c.Key] = true, true
-		if !keyRE.MatchString(c.Key) {
-			bad("channel key %q invalid", c.Key)
-		}
-		if !types[c.Type] {
-			bad("channel %s type %q invalid", c.Key, c.Type)
-		}
-		if c.Type == "enum" && len(c.Values) == 0 {
-			bad("enum channel %s has no values", c.Key)
-		}
-		if len(c.Agg) == 0 {
-			bad("channel %s needs agg", c.Key)
-		}
-		for _, a := range c.Agg {
-			if !aggs[a] {
-				bad("channel %s agg %q invalid", c.Key, a)
-			}
-		}
-		if !classes[c.Class] {
-			bad("channel %s class %q invalid", c.Key, c.Class)
-		}
-		for _, m := range c.Calibration {
-			if !calMeth[m] {
-				bad("channel %s calibration %q invalid", c.Key, m)
-			}
-		}
-		if len(c.Range) != 0 && (len(c.Range) != 2 || c.Range[0] > c.Range[1]) {
-			bad("channel %s range invalid", c.Key)
-		}
-		if c.Type == "int" && len(c.Range) == 2 && (c.Range[0] < -(1<<53) || c.Range[1] > 1<<53) {
-			bad("channel %s int range exceeds 2^53 (spec 04 §2.2)", c.Key)
+		checkChannel(p, c)
+	}
+}
+
+func checkChannel(p *problems, c Field) {
+	if !keyRE.MatchString(c.Key) {
+		p.add("channel key %q invalid", c.Key)
+	}
+	if !types[c.Type] {
+		p.add("channel %s type %q invalid", c.Key, c.Type)
+	}
+	if c.Type == "enum" && len(c.Values) == 0 {
+		p.add("enum channel %s has no values", c.Key)
+	}
+	if len(c.Agg) == 0 {
+		p.add("channel %s needs agg", c.Key)
+	}
+	for _, a := range c.Agg {
+		if !aggs[a] {
+			p.add("channel %s agg %q invalid", c.Key, a)
 		}
 	}
-	for _, sl := range s.Slots {
-		if s.Kind != "product" {
-			bad("only products have slots")
-		}
-		if sl.Slot < 1 || sl.Slot > 239 || !keyRE.MatchString(sl.Key) {
-			bad("slot %d/%s invalid", sl.Slot, sl.Key)
+	if !classes[c.Class] {
+		p.add("channel %s class %q invalid", c.Key, c.Class)
+	}
+	for _, m := range c.Calibration {
+		if !calMeth[m] {
+			p.add("channel %s calibration %q invalid", c.Key, m)
 		}
 	}
-	uniq := func(what string, fs []Field, lo, hi int) {
-		seen := map[int]bool{}
-		for _, f := range fs {
-			if f.ID < lo || f.ID > hi || seen[f.ID] || !keyRE.MatchString(f.Key) {
-				bad("%s %s/%d invalid or duplicated", what, f.Key, f.ID)
-			}
-			seen[f.ID] = true
-		}
+	if len(c.Range) != 0 && (len(c.Range) != 2 || c.Range[0] > c.Range[1]) {
+		p.add("channel %s range invalid", c.Key)
 	}
-	uniq("config", s.Config, 1, 65535)
-	uniq("command", s.Commands, 1, 65535)
-	uniq("event", s.Events, 1000, 65535)
-	return errs
+	if c.Type == "int" && len(c.Range) == 2 && (c.Range[0] < -(1<<53) || c.Range[1] > 1<<53) {
+		p.add("channel %s int range exceeds 2^53 (spec 04 §2.2)", c.Key)
+	}
+}
+
+// checkFields checks that config/command/event ids are in range and unique.
+func checkFields(p *problems, what string, fs []Field, lo, hi int) {
+	seen := map[int]bool{}
+	for _, f := range fs {
+		if f.ID < lo || f.ID > hi || seen[f.ID] || !keyRE.MatchString(f.Key) {
+			p.add("%s %s/%d invalid or duplicated", what, f.Key, f.ID)
+		}
+		seen[f.ID] = true
+	}
 }
 
 func ident(s string) string { return strings.ToUpper(strings.ReplaceAll(s, "-", "_")) }
@@ -258,53 +279,75 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: iotgen check|gen [flags] files...")
 		os.Exit(2)
 	}
-	cmd := os.Args[1]
-	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+	if err := run(os.Args[1], os.Args[2:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run(cmd string, args []string) error {
+	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	cOut := fs.String("c", "", "C header output directory")
 	goOut := fs.String("go", "", "Go package output directory")
-	fs.Parse(os.Args[2:])
-
-	var ss []*Schema
-	failed := false
-	for _, path := range fs.Args() {
-		s, err := load(path)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			failed = true
-			continue
-		}
-		for _, e := range check(s) {
-			fmt.Fprintln(os.Stderr, e)
-			failed = true
-		}
-		ss = append(ss, s)
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("flags: %w", err)
 	}
-	if failed {
-		os.Exit(1)
+	ss, err := loadAll(fs.Args())
+	if err != nil {
+		return err
 	}
 	switch cmd {
 	case "check":
 		fmt.Printf("%d schemas OK\n", len(ss))
+		return nil
 	case "gen":
-		if *cOut != "" {
-			os.MkdirAll(*cOut, 0o755)
-			for _, s := range ss {
-				name := fmt.Sprintf("%s_v%s.h", s.Schema, strings.Split(s.Version, ".")[0])
-				if err := os.WriteFile(filepath.Join(*cOut, name), []byte(genC(s)), 0o644); err != nil {
-					fmt.Fprintln(os.Stderr, err)
-					os.Exit(1)
-				}
-			}
-		}
-		if *goOut != "" {
-			os.MkdirAll(*goOut, 0o755)
-			if err := os.WriteFile(filepath.Join(*goOut, "schemas_gen.go"), []byte(genGo(ss)), 0o644); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-		}
+		return generate(ss, *cOut, *goOut)
 	default:
-		fmt.Fprintln(os.Stderr, "unknown command", cmd)
-		os.Exit(2)
+		return fmt.Errorf("unknown command %q", cmd)
 	}
+}
+
+// loadAll loads and checks every file, reporting all problems before failing.
+func loadAll(paths []string) ([]*Schema, error) {
+	ss := make([]*Schema, 0, len(paths))
+	var errs []string
+	for _, path := range paths {
+		s, err := load(path)
+		if err != nil {
+			errs = append(errs, err.Error())
+			continue
+		}
+		errs = append(errs, check(s)...)
+		ss = append(ss, s)
+	}
+	if len(errs) > 0 {
+		return nil, errors.New(strings.Join(errs, "\n"))
+	}
+	return ss, nil
+}
+
+func generate(ss []*Schema, cOut, goOut string) error {
+	if cOut != "" {
+		for _, s := range ss {
+			name := fmt.Sprintf("%s_v%s.h", s.Schema, strings.Split(s.Version, ".")[0])
+			if err := writeSource(cOut, name, genC(s)); err != nil {
+				return err
+			}
+		}
+	}
+	if goOut != "" {
+		return writeSource(goOut, "schemas_gen.go", genGo(ss))
+	}
+	return nil
+}
+
+func writeSource(dir, name, content string) error {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	//nolint:gosec // G306: generated source files are committed and must be world-readable like any other source.
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", name, err)
+	}
+	return nil
 }

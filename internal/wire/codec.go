@@ -35,7 +35,7 @@ func init() {
 		MaxNestedLevels:  16,
 		MaxArrayElements: 1 << 16,
 		MaxMapPairs:      1 << 16,
-		IntDec:           cbor.IntDecConvertSigned,
+		IntDec:           cbor.IntDecConvertSignedOrFail,
 		DefaultMapType:   nil,
 	}
 	decMode, err = base.DecMode()
@@ -51,13 +51,19 @@ func init() {
 }
 
 // Marshal encodes v with the package's deterministic encoding.
-func Marshal(v any) ([]byte, error) { return encMode.Marshal(v) }
+func Marshal(v any) ([]byte, error) {
+	b, err := encMode.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("wire: encode: %w", err)
+	}
+	return b, nil
+}
 
 // Unmarshal decodes data into v. Trailing bytes are an error.
 func Unmarshal(data []byte, v any) error {
 	rest, err := decMode.UnmarshalFirst(data, v)
 	if err != nil {
-		return err
+		return fmt.Errorf("wire: decode: %w", err)
 	}
 	if len(rest) != 0 {
 		return fmt.Errorf("wire: %d trailing bytes", len(rest))
@@ -68,7 +74,7 @@ func Unmarshal(data []byte, v any) error {
 func unmarshalStrict(data []byte, v any) error {
 	rest, err := strictDecMode.UnmarshalFirst(data, v)
 	if err != nil {
-		return err
+		return fmt.Errorf("wire: decode: %w", err)
 	}
 	if len(rest) != 0 {
 		return fmt.Errorf("wire: %d trailing bytes", len(rest))

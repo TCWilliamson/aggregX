@@ -1,5 +1,8 @@
 package wire
 
+// MaxRelayItems bounds both items and poll entries in one relay request (spec 02 §4.1).
+const MaxRelayItems = 500
+
 // Relay result codes (spec 02 §4.2).
 const (
 	RelayAccepted = iota
@@ -59,7 +62,7 @@ func DecodeRelayRequest(data []byte) (*RelayRequest, error) {
 	if !ValidSerial(r.GW) {
 		return nil, errf("bad_serial", "gw %q", r.GW)
 	}
-	if len(r.Items) > 500 || len(r.Poll) > 500 {
+	if len(r.Items) > MaxRelayItems || len(r.Poll) > MaxRelayItems {
 		return nil, errf("too_many_items", "")
 	}
 	return &r, nil

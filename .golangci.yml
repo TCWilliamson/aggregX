@@ -1,0 +1,62 @@
+# Strict lint configuration (docs/ENGINEERING.md §5). golangci-lint v2.
+version: "2"
+run:
+  timeout: 5m
+  tests: true
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - bodyclose
+    - contextcheck
+    - errorlint
+    - exhaustive
+    - forcetypeassert
+    - gocognit
+    - gosec
+    - nakedret
+    - nestif
+    - nilerr
+    - noctx
+    - prealloc
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+    - unparam
+    - wrapcheck
+    - funlen
+    - nolintlint
+  settings:
+    funlen:
+      lines: 60
+      statements: 40
+    gocognit:
+      min-complexity: 20
+    nestif:
+      min-complexity: 4
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+    exhaustive:
+      default-signifies-exhaustive: false
+  exclusions:
+    rules:
+      # Generated code.
+      - path: _gen\.go
+        linters: [revive, funlen, unused]
+      # Test tables are long by nature.
+      - path: _test\.go
+        linters: [funlen, gocognit, wrapcheck, forcetypeassert]
+formatters:
+  enable:
+    - gofmt
+    - goimports
