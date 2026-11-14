@@ -166,7 +166,7 @@ stateDiagram-v2
 | 11 | `SENDING` | `http_503` | — | Use `Retry-After` with jitter as the backoff delay | `BACKOFF` | 01 §9 |
 | 12 | `SENDING` | `http_413` | batch has > 1 sample | Halve batch size limit for this upload | `BUILDING` | 01 §9 |
 | 13 | `SENDING` | `http_400`, `http_401`, `http_415` | same bytes sent < 3 times | `backoff_step += 1` | `BACKOFF` | 01 §9 |
-| 14 | `SENDING` | `http_400`, `http_401`, `http_415` | same bytes sent 3 times **(defect C34: contradicts spec 01 §7.1; to be replaced)** | Discard those samples from outbox (S2); append `dropped` reason 2 | `IDLE` | 01 §9 |
+| 14 | `SENDING` | `http_400`, `http_401`, `http_415` | same bytes sent 3 times **(C34: to be replaced by the `rejected_upload` policy, spec 06 §12; default `hold`)** | Discard those samples from outbox (S2); append `dropped` reason 2 | `IDLE` | 01 §9 |
 | 15 | `PROCESSING` | `verify` | signature invalid, unknown `kid`, `dev` not own serial | Count `reply_invalid`; `backoff_step += 1` | `BACKOFF` | 02 §3.5 |
 | 16 | `PROCESSING` | `verify` | valid, `inc` ≠ own | Ignore acks; mailbox handling per Q5 | `IDLE` | 01 §7, 02 §3.5 |
 | 17 | `PROCESSING` | `verify` | valid, `inc` = own | Set clock from `now` if unsynced and `n` matches (S4); apply acks (S2); process `mbox` (S5); queue `resend` ranges as priority (S2); `backoff_step = 0` | (by `st`, rows 18–22) | 01 §7.1–7.3, §8 |

@@ -213,3 +213,43 @@ The simulator writes a journal of every sample it generated and every sample it 
 5. Rollups recomputed from scratch equal the stored rollups.
 
 The queries are in `test/reconcile/` (Phase 0 build).
+
+## 12. Data policies (Draft, decided in principle 14 Nov, C55)
+
+**Requirement (tom, 14 Nov):** how rejected uploads are handled, the maximum backlog a device keeps, and the oldest sample the platform accepts are **customer choices**, not fixed platform behaviour.
+
+### 12.1 The one rule every policy obeys
+
+A policy may decide that data is not kept. It may never make that silent. Every sample a policy discards is **declared**: by the device as a `dropped` event over the exact range (spec 01 §4.5), or by the platform as a counted outcome in reconciliation, metering and the customer-visible data-health view. Invariant I1 is restated accordingly: a device deletes a sample only on a verified cloud ack **or** under a policy that declares it.
+
+### 12.2 Settings
+
+| Setting | Where enforced | Options | Default | Platform limits |
+|---|---|---|---|---|
+| `rejected_upload` | Device (spec 08 S1) | `hold`: keep the batch, back off, and drop only on a **signed rejection** that binds the batch's hash, then declare the range (`dropped`, reason 2). `drop_after`: also drop after N rejections of identical bytes over at least T, and declare it | `hold` | `drop_after` needs N ≥ 3 and T ≥ 24 h, so a short platform fault cannot trigger loss |
+| `outbox_full` | Device (S2) | `drop_oldest`, `drop_newest` (stop recording), `thin` (keep every k-th of the oldest half) | `drop_oldest` | Always declared (`dropped`, reason 0 or 1) |
+| `max_backlog_age` | Device (S2) | Discard samples older than D days that are still unacked | Unlimited | D ≥ 1 day; declared (`dropped`, new reason 4 *policy age*) |
+| `max_sample_age` | Platform workers | Samples older than A on arrival are acked but not stored | Unlimited (store any age, §8) | A ≥ 1 day; counted as `rejected_by_policy`, visible to the customer. Retention still applies (§8, `expired_on_arrival`) |
+
+Further policy settings (for example clock-skew tolerance or allowance tiers) follow the same pattern and the same rule.
+
+### 12.3 Storage and inheritance
+
+- PostgreSQL table `data_policies`: one row per (scope, setting) with `value`, `version`, `effective_from`, `set_by`, `reason`. Scope is an org, a product within an org, or a device group. *(Migration pending.)*
+- Resolution: the most specific scope wins, then inheritance up the org tree, then the platform default. The resolved value is shown with where it came from.
+- Changes are effective-dated and never retroactive. A change takes effect at a stated future time (default immediately for loosening, next UTC midnight for tightening) so devices and workers agree on which batches it covers.
+- Every change is written to `audit_log` and notified to the org's admins. Tightening a setting that can discard data needs the `policies:data-loss` permission and a typed confirmation in the portal.
+
+### 12.4 Delivery and determinism
+
+- **Device-side settings** are ordinary configuration fields in a reserved `sys` config range (spec 04 §4, slot 0), delivered by the signed `cfg` mailbox item (spec 01 §7.2) and confirmed through `mres`. The device applies them atomically with the rest of its config (spec 08 S6). Until a device confirms, the platform shows the policy as pending for that device.
+- **Platform-side settings** are applied by workers using the policy version **effective at the batch's ingest `received_at`** (carried in the ingest record, spec 06 §2.1), never the version current at processing time. A replayed batch therefore gets the same decision (I5 thinking applied to policy).
+- The policy version that decided each discard is recorded with the counted outcome, so any loss can be traced to the setting and the person who chose it.
+
+### 12.5 Open questions
+
+| # | Question | Proposed direction |
+|---|---|---|
+| Q-P1 | Can a reseller or maker (a parent org) lock a setting so child orgs cannot loosen or tighten it? | Yes, a `locked` flag on the parent's row |
+| Q-P2 | Should `rejected_upload` default differ for battery devices with tiny outboxes? | No; `hold` everywhere; `outbox_full` handles space |
+| Q-P3 | Do platform limits (minimum N, T, D, A) need to be per product tier? | Not for the pilot |

@@ -41,7 +41,7 @@ Severity: **High** = would lose, duplicate or leak data, or open a security hole
 | C31 | Medium | `readings` row volume scales with channel count; block samples as rows | Decided 14 Nov: block store; narrow rows for records, benchmark later |
 | C32 | High | Control uploads (only `mres`/`rcfg`) are never published, so move boundary results never reach a worker | Fix agreed in direction, spec text pending (research) |
 | C33 | High | `boot_skip`/`dropped` ranges are recorded as accepted, so later real data in those ranges is suppressed, contradicting spec 01 §5.2 | Fix agreed in direction, spec text pending (research) |
-| C34 | High | Spec 08 S1 row 14 discards samples after three 400/401 replies, contradicting spec 01 §7.1 (delete only on a verified ack); on the gateway path a poison batch is never reported and blocks the outbox | **Decision** (research) |
+| C34 | High | Discard after three 400/401 replies contradicts delete-only-on-ack; poison batches on the gateway path | Decided 14 Nov: per-customer policy `rejected_upload`, default hold until a signed rejection (spec 06 §12) |
 | C35 | High | Config hash can never match for float fields: C encodes fixed-width floats, Go shortest form, hash is over canonical bytes | Fix agreed in direction, spec text pending (research) |
 | C36 | High | Move boundary vector omits series of a removed module, so its backlog routes to the new org; unclaim-to-reclaim data goes to the next owner | **Decision** (research) |
 | C37 | High | Block sensor instance resolved from "the most recent composition event" makes a key column depend on processing order (breaks I5) | Fix agreed in direction, spec text pending (research) |
@@ -62,6 +62,7 @@ Severity: **High** = would lose, duplicate or leak data, or open a security hole
 | C52 | High (test validity) | Dev Compose runs Redpanda in `dev-container` mode (no fsync), so I2 does not hold and fault tests of I2 on it are void | Fix agreed in direction, spec text pending (research) |
 | C53 | Medium | Asset / ownership model deferred to Phase 4, but customers' unit of interest is often not the device | Decided 14 Nov: asset and ownership model in Phase 1; spec to write |
 | C54 | High | No way to bring a device back after a trust failure or total memory loss | Decided in principle 14 Nov: field recovery over serial (spec 03 §11, Draft) |
+| C55 | Medium | Rejected-upload handling, backlog limits and oldest accepted sample were fixed platform behaviour | Decided in principle 14 Nov: per-customer data policies, always declared (spec 06 §12, Draft) |
 
 ## Details
 
@@ -377,4 +378,5 @@ Source: `/mnt/project-files/iot-platform/research/00-synthesis.md` §2–§3, ea
 - **Multi-tenancy:** one system for all customers and device types (README).
 - **C39:** "we should support an offline rootkey, yes." An offline root key, pinned in every device at manufacture, endorses the online reply-signing keys and signs trust-anchor bundles (spec 03 §11.2 rule 3). Endorsements must be verifiable by a device holding only the root.
 - **C54 (new requirement):** customers can bring devices back onto the platform by hand after a catastrophic security failure or complete memory loss, via a web app over serial. Principles and open questions in spec 03 §11; flow F18 in spec 08.
+- **C34, C55:** "for rejected uploads, let's have that be a customer choice, same for max backlog length etc. (and max accepted out of date timestamp)." Data policies are per org, product or device group, inherited down the org tree, effective-dated and audited; any discard they cause is declared, never silent (spec 06 §12). Defaults: hold until a signed rejection, drop oldest when full, no age limits.
 
