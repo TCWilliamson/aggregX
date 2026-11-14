@@ -144,6 +144,7 @@ The simulator (§6) drives these against the full stack. Each scenario runs with
 | P3 | Ingest restarted every 30 s during load | Devices see 503s or timeouts and resend; reconciliation passes |
 | P4 | Redpanda restarted | 503s while down; nothing acked is lost |
 | P5 | Network partition between ingest and Redis | 503; no ack without the round trip |
+| P6 | 1,000 simulated devices return after 7 days offline, each with a full backlog, while 10,000 others send live data (spec 01 §7.5) | Every backlog sample stored exactly once; live-data p99 ingest latency within its normal target throughout; backfill batches paced with `next`, none refused; reconciliation passes |
 
 ## 5. L4: tenancy and access
 

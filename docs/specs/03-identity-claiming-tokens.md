@@ -145,6 +145,7 @@ A token bucket per device identity, held in Redis and checked in the round trip 
 
 - **Request rate**: capacity `burst` requests, refilling at `rate` per minute.
 - **Daily volume**: samples and bytes per UTC day, reset at midnight.
+- **Backfill volume**: batches flagged `backfill` count against a separate, larger allowance sized for the product's longest expected offline period. Over-allowance backfill gets a longer `next`; it is never answered with `st = 1`, so a returning device is slowed, not stranded (spec 01 §7.5).
 - Values come from the device's tier (product plan × power profile). Gateways have their own bucket for their own traffic and request rate. Per-org buckets sit on top (Phase 3).
 - An over-allowance batch is not stored and not acknowledged; the reply has `st = 1` and a `next` long enough to bring the device back under its rate. The device keeps the data.
 - Limits are per device or gateway identity, never per source IP. HAProxy limits only the rate of new TLS handshakes per IP, generously.

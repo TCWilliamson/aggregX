@@ -222,6 +222,19 @@ Every sample numbered below the boundary was captured before the move; every sam
 
 > **Design note (C4).** The design doc has the device acknowledge "with its current sequence number": one number. With several series the boundary is a vector.
 
+### 7.5 Draining a backlog
+
+A device that has been offline (no network, gateway down, platform refusing writes) may hold days or months of samples, in internal flash or on external storage such as an SD card. It drains them with ordinary uploads; there is no bulk-transfer mode.
+
+1. **Batches stay normal-sized.** Each upload is bounded by the transport's size limit (§10): about 1 KiB signed over Thread, up to the product's direct limit (16 KiB recommended, 64 KiB hard) over WiFi. A lost upload costs one batch, never the backlog.
+2. **Live first, then oldest first.** Each upload carries the newest unsent samples first, then fills the remaining space with the oldest unacknowledged samples. A batch that holds only backlog sets `fl.backfill`; any batch sent while more is waiting sets `fl.more`.
+3. **The cloud sets the pace.** The device sends its next batch after the reply's `next` seconds. `next = 0` means send again immediately. While it has capacity the platform answers backfill batches with `next = 0`; under load it stretches `next` for backfill batches before live ones (spec 03 §6.1, admission control). Without a reply (offline, timeout) the device backs off exponentially with jitter, from 10 s up to its normal interval.
+4. **Storage size never affects RAM.** The device encodes a batch record by record directly from storage (spec 04 §8.4), so a 32 GB card needs the same RAM as a 1 MB outbox. Only the sample index (series, first and last seq per stored block) is kept in RAM or rebuilt by scanning at boot.
+5. **Depth is visible.** The device reports outbox depth and oldest unsent sample age in `sys` channels on every upload, so the portal can show how far behind a device is.
+6. **Acks free storage in order.** Acks and ranges (§7.1) let the device free whole storage blocks once every sample in them is covered; it never needs to rewrite storage in place.
+
+Allowances must not strand a backlog: backfill batches are counted against a separate backfill volume allowance, sized for a product's maximum offline period, and over-allowance backfill is paced with `next`, never refused (spec 03 §6.1).
+
 ## 8. Time
 
 - **Synced** (`tb = 0`): `t0 + dt` is the capture time in Unix ms by the device's clock.

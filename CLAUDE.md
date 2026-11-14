@@ -8,7 +8,7 @@ Read `docs/ENGINEERING.md` before writing any code. Its rules are not optional. 
 4. **No mocks of Redis, Redpanda, PostgreSQL or ClickHouse** in correctness tests; use the Compose stack (`make up`).
 5. **Do not merge** changes to identity/crypto, acks/de-duplication/offsets/routing/retention, or OTA/bootloader code. Open the PR and say it needs tom's review (ENGINEERING §4).
 6. **No new dependencies** without a separate PR justifying them.
-7. Before saying a task is done, run: `gofmt -l .` (empty), `go vet ./...`, `golangci-lint run`, `go test -race ./...`, `make cddl`, `make c-vectors`. Report the actual output, including failures.
+7. Before saying a task is done, run: `gofmt -l .` (empty), `go vet ./...`, `golangci-lint run`, `go test -race ./...`, `make cddl`, `make c-vectors`, `make c-size`. Report the actual output, including failures.
 
 Useful commands: `make test`, `make up`, `make smoke`, `make schemas`, `make cddl`, `make c-vectors`.
 
