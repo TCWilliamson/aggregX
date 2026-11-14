@@ -39,6 +39,27 @@ Severity: **High** = would lose, duplicate or leak data, or open a security hole
 | C29 | High | Samples past the late window are acked, then quarantined: the device deletes data that is never stored | **Decision** (found by customer scenarios X1) |
 | C30 | High | Boot anchor for uptime backlogs is wrong and can never be corrected | **Decision** (customer scenarios X2) |
 | C31 | Medium | `readings` row volume scales with channel count; block samples as rows | **Decision**, needs benchmarks (customer scenarios X3) |
+| C32 | High | Control uploads (only `mres`/`rcfg`) are never published, so move boundary results never reach a worker | Fix agreed in direction, spec text pending (research) |
+| C33 | High | `boot_skip`/`dropped` ranges are recorded as accepted, so later real data in those ranges is suppressed, contradicting spec 01 §5.2 | Fix agreed in direction, spec text pending (research) |
+| C34 | High | Spec 08 S1 row 14 discards samples after three 400/401 replies, contradicting spec 01 §7.1 (delete only on a verified ack); on the gateway path a poison batch is never reported and blocks the outbox | **Decision** (research) |
+| C35 | High | Config hash can never match for float fields: C encodes fixed-width floats, Go shortest form, hash is over canonical bytes | Fix agreed in direction, spec text pending (research) |
+| C36 | High | Move boundary vector omits series of a removed module, so its backlog routes to the new org; unclaim-to-reclaim data goes to the next owner | **Decision** (research) |
+| C37 | High | Block sensor instance resolved from "the most recent composition event" makes a key column depend on processing order (breaks I5) | Fix agreed in direction, spec text pending (research) |
+| C38 | High | Schema major versions may change a channel id's type or unit, but stored rows carry no schema version | Fix agreed in direction, spec text pending (research) |
+| C39 | High (security) | Nothing sits above the online reply key: `key_rollover` is authorised only by the key it replaces; theft captures the fleet, loss strands it | **Decision** (research) |
+| C40 | High (security) | Gateway `poll` is unauthenticated: any gateway can read any device's mailbox items; replaying an old batch also returns a full signed reply | Fix agreed in direction, spec text pending (research) |
+| C41 | High | A Thread device never receives a signed refusal (unclaimed, revoked, throttled), so spec 08 `HELD` is unreachable on the gateway path | Fix agreed in direction, spec text pending (research) |
+| C42 | High (security) | Alert evaluation on the raw ingest topic can leak data across tenants after a move | Fix agreed in direction, spec text pending (research) |
+| C43 | Medium | Test keys are linked into non-test code (`internal/wire/examples.go`) | Fix agreed in direction, spec text pending (research) |
+| C44 | Medium | Gateway 2 s piggyback wait collides with CoAP's 2 s ACK_TIMEOUT | **Decision** (research) |
+| C45 | Medium | 1,024 signed bytes is 11-12 802.15.4 frames, not 9-10 (spec 01 §10) | Fix agreed in direction, spec text pending (research) |
+| C46 | Medium | Spec 01 §7.5 asks for live-first then oldest in one upload, but a section is one consecutive run, so the envelope cannot express it | Fix agreed in direction, spec text pending (research) |
+| C47 | Medium | Rollups: live hour starved by the 60 s dirty rule; reading rollups without `FINAL` double-counts | Fix agreed in direction, spec text pending (research) |
+| C48 | Medium | Migration runner has no lock, non-atomic bookkeeping, re-runs every ClickHouse file | Fix agreed in direction, spec text pending (research) |
+| C49 | Medium | C vector runner covers 11 of 30 vectors | Fix agreed in direction, spec text pending (research) |
+| C50 | High (hardware) | nRF52840 has lost Thread support on Nordic NCS main; internal flash leaves ~64 kB outbox and a nearly full OTA slot | **Decision** (research) |
+| C51 | High (hardware) | One P-256 firmware key (spec 03 §9) is impossible: ESP32-S3 secure boot is RSA-3072 only; ESP32-H2 has an ECDSA secure-boot advisory | Fix agreed in direction, spec text pending (research) |
+| C52 | High (test validity) | Dev Compose runs Redpanda in `dev-container` mode (no fsync), so I2 does not hold and fault tests of I2 on it are void | Fix agreed in direction, spec text pending (research) |
 
 ## Details
 
@@ -301,3 +322,30 @@ A sample older than its own retention period on arrival is the one honest except
 2. **To benchmark before deciding:** keep narrow `readings` (simple queries, best compression per column) versus a row per record with parallel arrays or a `Map(UInt16, Float64)` of channel values (far fewer rows, harder per-channel queries and rollups). The research thread's pipeline area is asked to compare these with measured ClickHouse numbers for scenarios 8 and 10.
 3. Per-channel storage tiers: channels flagged `diagnostic` go to a cheaper, shorter-lived table.
 
+## Defects found by the research team (14 Nov)
+
+Source: `/mnt/project-files/iot-platform/research/00-synthesis.md` §2–§3, each confirmed by an author and an independent reviewer against the spec text. Details and evidence are in the numbered area reports there. Proposed directions below are the research team's, not yet written into the specs.
+
+| # | Severity | Problem | Proposed direction |
+|---|---|---|---|
+| C32 | High | Control uploads (only `mres`/`rcfg`) are never published, so move boundary results never reach a worker | Fix in spec 06 §3.1: a batch with `mres` or `rcfg` is always published, whatever its sections' state |
+| C33 | High | `boot_skip`/`dropped` ranges are recorded as accepted, so later real data in those ranges is suppressed, contradicting spec 01 §5.2 | Fix in spec 06 §3: declared ranges are a separate state (declared, not accepted); data arriving in them is published |
+| C34 | High | Spec 08 S1 row 14 discards samples after three 400/401 replies, contradicting spec 01 §7.1 (delete only on a verified ack); on the gateway path a poison batch is never reported and blocks the outbox | **Decision** (research §5 #15). Recommended: hold and back off, never delete; the cloud returns a signed rejection binding the batch hash so the device can declare a `dropped` range with proof |
+| C35 | High | Config hash can never match for float fields: C encodes fixed-width floats, Go shortest form, hash is over canonical bytes | Fix in spec 01 §7.2/spec 04 §4: config floats are encoded at a fixed width defined by the schema field type, or the hash is over a defined canonical form both sides produce; vector test compares bytes |
+| C36 | High | Move boundary vector omits series of a removed module, so its backlog routes to the new org; unclaim-to-reclaim data goes to the next owner | Fix in spec 01 §7.4: boundary covers every series with unacked samples, including removed slots. Unclaim-to-reclaim: **Decision** (research §5 #13) |
+| C37 | High | Block sensor instance resolved from "the most recent composition event" makes a key column depend on processing order (breaks I5) | Fix in spec 06: resolve from the composition epoch carried in the batch, keyed `(module_id, channel_id)` |
+| C38 | High | Schema major versions may change a channel id's type or unit, but stored rows carry no schema version | Fix in spec 04: a channel id never changes type or unit; a change takes a new id |
+| C39 | High (security) | Nothing sits above the online reply key: `key_rollover` is authorised only by the key it replaces; theft captures the fleet, loss strands it | **Decision** (research §5 #9, #10). Recommended: offline reply root pinned in firmware, endorsing online reply keys; endorsements verifiable by a device holding only the root |
+| C40 | High (security) | Gateway `poll` is unauthenticated: any gateway can read any device's mailbox items; replaying an old batch also returns a full signed reply | Fix in spec 02/01: mailbox items are only returned in reply to a new batch (fresh nonce, unseen seq or a signed heartbeat); `poll` returns only acks |
+| C41 | High | A Thread device never receives a signed refusal (unclaimed, revoked, throttled), so spec 08 `HELD` is unreachable on the gateway path | Fix in spec 02 §4.2: refusals for a device are signed per-device replies binding the batch hash |
+| C42 | High (security) | Alert evaluation on the raw ingest topic can leak data across tenants after a move | Fix (future alerting spec): evaluate only stream-attributed data after the storage commit |
+| C43 | Medium | Test keys are linked into non-test code (`internal/wire/examples.go`) | Fix in code: move `TestKey` and examples behind a test-only package or build tag; CI check that production binaries contain no test key |
+| C44 | Medium | Gateway 2 s piggyback wait collides with CoAP's 2 s ACK_TIMEOUT | **Decision after measurement** (research §5 #5) |
+| C45 | Medium | 1,024 signed bytes is 11-12 802.15.4 frames, not 9-10 (spec 01 §10) | Fix figure; Thread batch size **decision after measurement** (research §5 #4: start at 512, grow on success) |
+| C46 | Medium | Spec 01 §7.5 asks for live-first then oldest in one upload, but a section is one consecutive run, so the envelope cannot express it | Fix: one batch is either live or backfill (alternate batches), or allow two runs per series; decide in spec 01 |
+| C47 | Medium | Rollups: live hour starved by the 60 s dirty rule; reading rollups without `FINAL` double-counts | Fix in spec 06 §7 |
+| C48 | Medium | Migration runner has no lock, non-atomic bookkeeping, re-runs every ClickHouse file | Fix in code with a test (advisory lock, per-file transaction, ClickHouse bookkeeping table) |
+| C49 | Medium | C vector runner covers 11 of 30 vectors | Fix in `sdk/c/test`: every vector, including invalid ones |
+| C50 | High (hardware) | nRF52840 has lost Thread support on Nordic NCS main; internal flash leaves ~64 kB outbox and a nearly full OTA slot | **Decision** (research §2.1, §5 #1-2) |
+| C51 | High (hardware) | One P-256 firmware key (spec 03 §9) is impossible: ESP32-S3 secure boot is RSA-3072 only; ESP32-H2 has an ECDSA secure-boot advisory | Fix in spec 03 §9: per-chip-family boot key sets with revocation slots. Batch signing unaffected |
+| C52 | High (test validity) | Dev Compose runs Redpanda in `dev-container` mode (no fsync), so I2 does not hold and fault tests of I2 on it are void | Fix: production-mode Redpanda for fault tests; separate production Compose file |
