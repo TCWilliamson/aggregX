@@ -15,6 +15,7 @@ These specs turn the design doc into contracts that code, firmware and tests can
 | 05 | [Tenancy and data streams](05-tenancy-and-streams.md) | Entities, data streams, sample routing, visibility windows, moves including `move_boundary`, PostgreSQL tables |
 | 06 | [Telemetry storage and exactly-once](06-telemetry-storage-and-exactly-once.md) | Redpanda topics, ClickHouse tables, rollups, the end-to-end exactly-once contract and its invariants, reconciliation |
 | 07 | [Contract and fault test plan](07-contract-test-plan.md) | Golden vectors, ingest contract tests, simulator fault scenarios, the reconciliation oracle, Phase 0 exit test |
+| 08 | [State machines and process flows](08-state-machines-and-flows.md) | Format for every state machine and flow, inventory of all of them, device runtime machine as the worked example (Draft 0) |
 | — | [CONTRADICTIONS.md](CONTRADICTIONS.md) | Register of design-doc issues found while writing these specs, with proposed resolutions and who decides |
 
 Machine-readable sources live in the repository, not in these documents:
