@@ -231,3 +231,7 @@ Each needs an answer before §4 leaves draft. Proposed answers are what §4 curr
 | Q6 | Config apply must survive power loss mid-apply: double-buffered config with a commit marker? | Yes; specified in S6 |
 | Q7 | Reply timeout values per transport? | 30 s direct, 120 s via gateway (sleepy devices may wait for the gateway's next relay) |
 | Q8 | Poll for a device with nothing to send but `more` set: heartbeat record as in spec 03 §4? | Yes, for both paths |
+| Q9 | Customer scenarios X2 / C30: should a synced boot's `time_sync` be repeated in every later envelope carrying that boot's uptime samples? | Yes; S4 persists the sync point per boot and S1 row 8 adds it when building a batch |
+| Q10 | Customer scenarios X1 / C29: worker (C9) behaviour for samples past the late window | Store them normally; quarantine only impossible times; `expired_on_arrival` is declared |
+| Q11 | Customer scenarios X8: pre-trigger ring buffers versus "numbered at capture" (spec 01 §5.1) | Open: to be settled in S3 (series counters) before that machine is written |
+

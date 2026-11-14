@@ -36,6 +36,9 @@ Severity: **High** = would lose, duplicate or leak data, or open a security hole
 | C26 | Low | Revocation via Redis pub/sub | Improved (Redis Stream + version poll) |
 | C27 | Medium | Which CA devices trust for ingest TLS | Closed 14 Nov (own CA for devices, public CA for portal/API) |
 | C28 | Medium | Pilot hardware | **Proposed**, awaiting tom's confirmation |
+| C29 | High | Samples past the late window are acked, then quarantined: the device deletes data that is never stored | **Decision** (found by customer scenarios X1) |
+| C30 | High | Boot anchor for uptime backlogs is wrong and can never be corrected | **Decision** (customer scenarios X2) |
+| C31 | Medium | `readings` row volume scales with channel count; block samples as rows | **Decision**, needs benchmarks (customer scenarios X3) |
 
 ## Details
 
@@ -262,3 +265,39 @@ The specs assume ES256 because every candidate part supports it in hardware or w
 - The device SDK is a portable C core (envelope, outbox, sequence state, signing, reply handling) with a thin platform layer: ESP-IDF first (C6 test fleet, border router), Zephyr/nRF Connect second (PAN B511). The same core runs in both, and in the simulator's host build for unit tests.
 - The C6 fleet is the hardware-in-the-loop rig: devices flashed by script over USB, each run recorded, used for soak, outage and fault tests alongside the software simulator.
 - **tom, 14 Nov:** ESP32-C6, nRF54 (nRF54L15) and nRF52 (nRF52840) are all realistic production chips for customers, so the SDK supports all three as first-class targets, not one pilot chip. Each target gets a profile (key storage per spec 03 §2.3, outbox size, max batch items and block values as in the c-vectors device profile) and runs the same contract and vector tests in CI. nRF52840 is the tightest (256 KB RAM, 1 MB flash), so its profile sets the floor for buffer sizes.
+
+### C29. Acknowledged, then quarantined (High, Decision)
+
+**Found by:** customer scenarios X1 (`/mnt/project-files/iot-platform/specs/customer-scenarios.md`, scenarios 1, 6, 11, 12). **Not in the design doc; a defect in these specs.**
+
+**Problem:** spec 06 §8 quarantines samples older than the late-data window (default 30 days). Ingest has already acked them (spec 01 §9 forbids rejecting on age, correctly), so the device deletes them (I1). They then exist only in `quarantine`, outside every query. Spec 06 §1 promises an acked sample is in ClickHouse. A pharma shipper with a 45-day trip, or a bridge logger with a 6-month SD backlog, silently loses its oldest data.
+
+**Options:**
+1. **Recommended:** store late samples normally. Age stops being a quarantine reason; only impossible times are (more than 5 minutes in the future, before the product's epoch). Inserts into old daily partitions cost extra merges, which ClickHouse handles; the rollup dirty-hour recompute (spec 06 §7) already copes with late rows and is rate-limited. The late window then only bounds how far back rollups are recomputed automatically; older buckets are recomputed by a slower backfill job from raw rows.
+2. Store late samples in a separate `readings_late` table and union it in queries. Keeps hot partitions clean; every query and rollup gets more complex.
+3. Keep quarantine but make it queryable and auto-promote. Same storage as option 1 with more moving parts.
+
+A sample older than its own retention period on arrival is the one honest exception: it is acked and deliberately not stored, counted as `expired_on_arrival` in metering and reconciliation, so it is declared, never silent.
+
+### C30. Boot anchors for uptime backlogs (High, Decision)
+
+**Found by:** customer scenarios X2 (scenarios 1, 6, 9, 11). **A defect in these specs (C1's fix is incomplete).**
+
+**Problem:** spec 06 §4.3 anchors a boot from a `time_sync` in the same envelope, else `received_at − (t0 + max dt)` of the first envelope seen for that boot, first-write-wins. With oldest-first backlog draining (spec 01 §7.5) the first envelope seen for an old boot usually has no `time_sync` and arrives days late, so the whole boot is stamped days late, and the anchor can never be corrected because `ts` is in the storage key (I5).
+
+**Options:**
+1. **Recommended, two parts.** (a) Device: once a boot has synced, every later envelope carrying uptime samples of that boot also carries that boot's `time_sync` event (its sync point is persisted with the boot record). Then every boot that ever synced is anchored exactly, whatever order its data arrives in. (b) Cloud: for a boot that never synced, the anchor is an estimate; store it with a distinct quality flag `anchor_estimated` (separate from `uptime_anchored`) and record the bounds known (previous boot's last synced time, first receive time), so queries and users can see the uncertainty. Ingest-side cost: one extra event per uptime envelope.
+2. Take `ts` out of the storage keys for uptime samples (key on `inc, series, seq`) so anchors can be corrected later with a version column. Fixes everything, but changes the key-purity design (I5) and every table's ORDER BY; much larger change.
+3. Defer anchoring until a `time_sync` arrives. Data from never-synced boots would wait forever or need a timeout, and rows would be invisible meanwhile.
+
+### C31. Row volume driven by channel count (Medium, Decision after benchmarks)
+
+**Found by:** customer scenarios X3 (scenarios 2, 4, 8, 10, 12).
+
+**Problem:** `readings` holds one row per channel value, and spec 06 §4 also writes one `readings` row per block sample. Wide devices (220–670 channels) and waveforms put single customers at tens of billions of rows a day, changing the hardware estimate by an order of magnitude.
+
+**Options:**
+1. **Recommended now:** block samples are stored only in `blocks` (one row per block, values as a compressed array), not in `readings`. Cheap to decide before code exists.
+2. **To benchmark before deciding:** keep narrow `readings` (simple queries, best compression per column) versus a row per record with parallel arrays or a `Map(UInt16, Float64)` of channel values (far fewer rows, harder per-channel queries and rollups). The research thread's pipeline area is asked to compare these with measured ClickHouse numbers for scenarios 8 and 10.
+3. Per-channel storage tiers: channels flagged `diagnostic` go to a cheaper, shorter-lived table.
+
