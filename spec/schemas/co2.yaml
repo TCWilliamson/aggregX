@@ -1,0 +1,10 @@
+# Example module schema (spec 04 §2).
+schema: co2
+kind: module
+version: "2.0"
+title: CO2 module
+channels:
+  - {id: 1, key: co2_ppm, type: int, unit_in: "[ppm]", range: [0, 40000], agg: [avg, min, max], class: telemetry, calibration: [linear]}
+  - {id: 2, key: sensor_temp_c, type: float, unit_in: Cel, agg: [avg], class: diagnostic}
+config:
+  - {id: 1, key: abc_enabled, type: bool, default: true}

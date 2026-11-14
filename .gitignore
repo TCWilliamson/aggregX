@@ -1,0 +1,8 @@
+/bin/
+/build/
+/sdk/c/generated/
+/certs/
+*.key
+*.pem
+!spec/vectors/**
+.env

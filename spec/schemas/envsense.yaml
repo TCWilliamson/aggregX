@@ -1,0 +1,28 @@
+# Example product schema (spec 04 §2). Placeholder for the real pilot product.
+schema: envsense
+kind: product
+version: "3.2"
+title: Environmental sensor
+channels:
+  - {id: 1, key: temp_c, type: float, unit_in: Cel, range: [-40, 125], precision: 0.01, agg: [avg, min, max], class: telemetry, calibration: [linear, polynomial]}
+  - {id: 2, key: rh_pct, type: float, unit_in: "%", range: [0, 100], agg: [avg, min, max], class: telemetry, calibration: [linear]}
+  - {id: 3, key: door, type: enum, values: {0: closed, 1: open}, agg: [time_in_state, last], class: telemetry}
+  - {id: 4, key: pulses, type: int, agg: [sum], class: telemetry, counter: true}
+  - {id: 9, key: accel_z, type: float, unit_in: "m/s2", agg: [avg, min, max], class: telemetry}
+slots:
+  - {slot: 1, key: port1, accepts: [co2@2]}
+config:
+  - {id: 1, key: sample_s, type: int, range: [1, 86400], default: 60}
+  - {id: 2, key: report_s, type: int, range: [10, 86400], default: 300}
+  - {id: 3, key: burst_threshold, type: float, default: 2.5}
+commands:
+  - {id: 1, key: reboot}
+  - id: 2
+    key: identify
+    args:
+      - {id: 1, key: seconds, type: int, range: [1, 300], default: 10}
+events:
+  - id: 1000
+    key: tamper
+    attrs:
+      - {id: 1, key: severity, type: int}

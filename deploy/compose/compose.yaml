@@ -1,0 +1,201 @@
+# Development stack (design doc "Pilot topology", Phase 0). Runs on the 32 GB PC.
+#   docker compose -f deploy/compose/compose.yaml up -d --build
+# Config in environment variables, data in named volumes.
+name: iotp
+
+x-app: &app
+  build:
+    context: ../..
+    dockerfile: ${IOTP_DOCKERFILE:-Dockerfile}
+  image: iotp/platform:dev
+  restart: unless-stopped
+  environment: &app-env
+    CELL: uk1
+    PG_DSN: postgres://iotp:iotp@postgres:5432/iotp?sslmode=disable
+    REDIS_ADDR: redis:6379
+    KAFKA_BROKERS: redpanda:9092
+    CLICKHOUSE_ADDR: clickhouse:9000
+    CLICKHOUSE_USER: iotp
+    CLICKHOUSE_PASSWORD: iotp
+    HTTP_ADDR: ":8080"
+
+services:
+  # One-shot: generate development keys and certificates into the certs volume.
+  certs:
+    image: alpine:3.20
+    command: ["sh", "-c", "[ -f /certs/ingress-ca.pem ] || (apk add --no-cache openssl >/dev/null && sh /scripts/dev-keys.sh /certs)"]
+    volumes:
+      - ../../scripts:/scripts:ro
+      - certs:/certs
+
+  haproxy:
+    image: haproxy:3.0-alpine
+    restart: unless-stopped
+    depends_on:
+      certs: {condition: service_completed_successfully}
+      ingest: {condition: service_started}
+      core: {condition: service_started}
+    ports:
+      - "8443:8443"   # device and gateway ingress (TLS, gateway mTLS)
+      - "8080:8080"   # portal / API
+      - "8404:8404"   # HAProxy stats
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - certs:/certs:ro
+
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    restart: unless-stopped
+    command:
+      - redpanda start
+      - --mode dev-container          # single broker; acks=all is still fsynced
+      - --smp 1
+      - --memory 1G
+      - --kafka-addr internal://0.0.0.0:9092
+      - --advertise-kafka-addr internal://redpanda:9092
+    volumes:
+      - redpanda:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      retries: 30
+
+  redpanda-init:
+    image: redpandadata/redpanda:v24.2.7
+    depends_on:
+      redpanda: {condition: service_healthy}
+    entrypoint: ["sh", "-c"]
+    command:
+      - >
+        rpk topic create iot.ingest.v1 -X brokers=redpanda:9092
+        --partitions 48 --replicas 1
+        -c retention.ms=604800000 -c compression.type=producer -c max.message.bytes=1572864
+        || rpk topic describe iot.ingest.v1 -X brokers=redpanda:9092
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: iotp
+      POSTGRES_PASSWORD: iotp
+      POSTGRES_DB: iotp
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iotp -d iotp"]
+      interval: 3s
+      retries: 30
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: iotp
+      CLICKHOUSE_PASSWORD: iotp
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile: {soft: 262144, hard: 262144}
+    volumes:
+      - clickhouse:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user iotp --password iotp -q 'SELECT 1'"]
+      interval: 3s
+      retries: 40
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      retries: 30
+
+  # S3-compatible object storage for the Parquet archive and firmware.
+  # (MinIO no longer publishes community images; SeaweedFS is a drop-in S3 endpoint.)
+  objectstore:
+    image: chrislusf/seaweedfs:3.80
+    restart: unless-stopped
+    command: ["server", "-dir=/data", "-s3", "-s3.port=8333", "-master.volumeSizeLimitMB=1024"]
+    ports:
+      - "8333:8333"
+    volumes:
+      - objectstore:/data
+
+  # User identity provider (spec 03 §1). Dev mode, own database in the same PostgreSQL.
+  keycloak:
+    image: keycloak/keycloak:26.0
+    restart: unless-stopped
+    command: ["start-dev"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: iotp
+      KC_DB_PASSWORD: iotp
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    ports:
+      - "8180:8080"
+
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["migrate"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+
+  ingest:
+    <<: *app
+    command: ["ingest"]
+    volumes:
+      - certs:/certs:ro
+    depends_on:
+      redis: {condition: service_healthy}
+      redpanda-init: {condition: service_completed_successfully}
+
+  core:
+    <<: *app
+    command: ["core"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+
+  workers:
+    <<: *app
+    command: ["workers"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redpanda-init: {condition: service_completed_successfully}
+
+  # Tools, started on demand: docker compose --profile tools run --rm simulator
+  simulator:
+    <<: *app
+    profiles: ["tools"]
+    restart: "no"
+    entrypoint: ["/usr/local/bin/simulator"]
+    command: ["-target", "https://haproxy:8443", "-certs", "/certs", "-devices", "50"]
+    volumes:
+      - certs:/certs:ro
+    depends_on:
+      haproxy: {condition: service_started}
+
+  # Network fault injection for spec 07 L3 tests.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    profiles: ["test"]
+    ports:
+      - "8474:8474"
+
+volumes:
+  certs:
+  redpanda:
+  postgres:
+  clickhouse:
+  redis:
+  objectstore:

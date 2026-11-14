@@ -1,0 +1,6 @@
+# Fast dev image from binaries built on the host: make build-linux, then
+#   IOTP_DOCKERFILE=Dockerfile.local docker compose -f deploy/compose/compose.yaml up -d --build
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY bin/platform bin/simulator bin/iotgen /usr/local/bin/
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/platform"]

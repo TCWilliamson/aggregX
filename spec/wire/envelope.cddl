@@ -1,0 +1,223 @@
+; envelope.cddl: normative wire grammar for specs 01 and 02 (RFC 8610).
+; This file is the single source of truth for the wire format. C code is generated
+; from it with zcbor; the Go codec in internal/wire is checked against it in CI.
+;
+; Integer map keys are commented with their names. Ranges and limits that CDDL
+; cannot express (sum of section sizes, nesting depth) are in spec 01 §10.
+
+; ------------------------------------------------------------------ primitives
+uint32      = 0..4294967295
+seq         = uint32
+ms          = uint .size 8         ; milliseconds (64-bit)
+; zcbor does not support .regexp, so character patterns are enforced in code:
+;   serial    ^[A-Z0-9-]{1,32}$
+;   schema-id ^[a-z][a-z0-9_]{1,31}@[0-9]+\.[0-9]+$
+serial      = tstr .size (1..32)
+schema-id   = tstr .size (3..44)
+cfg-hash    = bstr .size 8
+geo2        = [ g2-lat: float, g2-lon: float ]
+geo4        = [ g4-lat: float, g4-lon: float, g4-alt: float, g4-acc: float ]
+geo         = geo2 / geo4
+value       = int / float / bool / tstr / geo
+num         = int / float
+
+; ------------------------------------------------------------------ envelope (spec 01 §3)
+envelope = {
+  0  => env-version,               ; v
+  1  => dev,                       ; dev
+  2  => inc,                       ; inc
+  3  => boot,                      ; boot
+  4  => schema,                    ; schema
+  5  => comp,                      ; comp
+  6  => fw,                        ; fw
+  7  => cfg,                       ; cfg
+  8  => tb,                        ; tb: 0 synced, 1 uptime
+  9  => t0,                        ; t0
+  ? 10 => flags,                   ; fl: bit0 backfill, bit1 more
+  ? 11 => records-section,         ; r      (series 0)
+  ? 12 => mod-map,                 ; mod    (series 16+slot)
+  ? 13 => block-section,           ; blk    (series 2)
+  ? 14 => event-section,           ; ev     (series 1)
+  ? 15 => mres-list,               ; mres
+  ? 16 => reported-config,         ; rcfg
+  ? 17 => nonce,                   ; n
+}
+
+; Field types are named individually so that zcbor generates distinct member names.
+env-version = 1
+dev         = serial
+inc         = 1..4294967295
+boot        = uint32
+schema      = schema-id
+comp        = uint
+fw          = tstr .size (1..32)
+cfg         = cfg-hash
+tb          = 0 / 1
+t0          = ms
+flags       = uint
+nonce       = uint32
+mod-map     = { + slot => mod-section }
+mres-list   = [ + mres ]
+
+slot             = 1..239
+channel-id       = 0..65535
+record           = [ rec-dt: ms, rec-values: { * channel-id => value } ]
+records-section  = [ r-first: seq, r-records: [ 1*1000 record ] ]
+mod-section      = [ mod-first: seq, mod-records: [ 1*1000 record ], mod-sn: serial, mod-schema: schema-id ]
+
+block = {
+  0 => blk-ch,                     ; ch
+  1 => blk-slot,                   ; slot (0 = main board)
+  2 => blk-dt,                     ; dt
+  3 => blk-hz,                     ; hz (> 0, <= 20000)
+  4 => blk-values,                 ; v
+}
+blk-ch     = channel-id
+blk-slot   = 0..239
+blk-dt     = ms
+blk-hz     = num
+blk-values = [ 1*4096 num ]
+block-section = [ blk-first: seq, blk-blocks: [ 1*1000 block ] ]
+
+event = {
+  0 => ev-type,                    ; type
+  1 => ev-dt,                      ; dt (start)
+  ? 2 => ev-dur,                   ; dur
+  ? 3 => ev-attrs,                 ; attrs
+  ? 4 => ev-slot,                  ; slot
+}
+ev-type  = 0..65535
+ev-dt    = ms
+ev-dur   = ms
+ev-attrs = { * attr-id => attr-value }
+ev-slot  = 0..239
+attr-id    = 0..65535
+attr-value = value / [ 3*3 tstr ]     ; [type, sn, schema] in composition events
+event-section = [ ev-first: seq, ev-events: [ 1*1000 event ] ]
+
+mres = [ mres-id: uint .size 8, mres-status: 0..5, ? mres-detail: mres-detail-t ]
+mres-detail-t = uint / tstr / boundary   ; error code, reason text, or move boundary
+boundary = { + series => seq }          ; spec 01 §7.4
+
+reported-config = {
+  0 => rcfg-hash,                  ; hash
+  1 => rcfg-values,                ; config, keyed by slot*65536 + field id
+}
+rcfg-hash   = cfg-hash
+rcfg-values = { * uint => value }
+
+; ------------------------------------------------------------------ reply (spec 01 §7)
+reply = {
+  0 => now,                        ; now
+  ? 1 => dev,                      ; dev (required when signed)
+  2 => inc-echo,                   ; inc
+  ? 3 => nonce,                    ; n
+  4 => st,                         ; st
+  ? 5 => ack-map,                  ; ack
+  ? 6 => resend-map,               ; resend
+  7 => next,                       ; next (seconds)
+  ? 8 => mbox,                     ; mbox
+  ? 9 => more,                     ; more
+}
+
+now        = ms
+inc-echo   = uint32
+st         = 0..5
+next       = uint
+more       = bool
+ack-map    = { * series => ack }
+resend-map = { * series => range-list }
+range-list = [ * range ]
+mbox       = [ * mailbox-item ]
+
+series = 0..255
+range  = [ range-from: seq, range-to: seq ]
+ack    = [ upto: -1..4294967295, ranges: range-list ]
+
+mailbox-item = {
+  0 => mb-id,                      ; id (per device, strictly increasing)
+  1 => mb-type,                    ; type
+  2 => mb-exp,                     ; exp
+  3 => mb-body,                    ; body (spec 01 §7.2)
+  ? 4 => mb-prio,                  ; prio
+}
+mb-id   = uint .size 8
+mb-type = 1..63
+mb-exp  = ms
+mb-body = any
+mb-prio = 0 / 1
+
+; ------------------------------------------------------------------ COSE profile (spec 02 §3)
+; Protected header: exactly {1: -7, 4: h'<4 bytes>'}, deterministically encoded.
+signed-batch = #6.18([
+  protected:   bstr .cbor protected-header,
+  unprotected: {},
+  payload:     bstr .cbor envelope,
+  signature:   bstr .size 64,
+])
+signed-reply = #6.18([
+  protected:   bstr .cbor protected-header,
+  unprotected: {},
+  payload:     bstr .cbor reply,
+  signature:   bstr .size 64,
+])
+protected-header = { 1 => -7, 4 => bstr .size 4 }
+
+; ------------------------------------------------------------------ gateway relay (spec 02 §4)
+relay-request = {
+  0 => rq-version,                 ; v
+  1 => rq-gw,                      ; gw
+  ? 2 => rq-items,                 ; items: signed batches as received
+  ? 3 => rq-poll,                  ; poll: [dev, inc]
+  ? 4 => rq-own,                   ; own: the gateway's own envelope
+  ? 5 => rq-seen,                  ; seen: [dev, rssi, lqi, last_ms]
+}
+rq-version = 1
+rq-gw      = serial
+rq-items   = [ * bstr ]
+rq-poll    = [ * [ poll-dev: serial, poll-inc: uint32 ] ]
+rq-own     = bstr .cbor envelope
+rq-seen    = [ * [ seen-dev: serial, seen-rssi: int, seen-lqi: uint, seen-last: ms ] ]
+
+relay-reply = {
+  0 => rr-now,                     ; now
+  ? 1 => rr-res,                   ; res
+  ? 2 => rr-polls,                 ; polls
+  ? 3 => reply,                    ; own
+  4 => rr-next,                    ; next
+}
+rr-now   = ms
+rr-res   = [ * relay-result ]
+rr-polls = [ * relay-result ]
+rr-next  = uint
+
+relay-result = {
+  ? 0 => res-dev,                  ; dev
+  1 => res-code,                   ; code
+  ? 2 => res-reply,                ; reply: signed-reply bytes
+}
+res-dev   = serial
+res-code  = 0..9
+res-reply = bstr
+
+; ------------------------------------------------------------------ ingest record (spec 06 §2.1)
+ingest-record = {
+  0 => ir-version,                 ; v
+  1 => ir-received-at,             ; received_at
+  2 => ir-node,                    ; node
+  3 => ir-path,                    ; path
+  ? 4 => ir-gw,                    ; gw
+  5 => ir-dev,                     ; dev
+  6 => ir-device-id,               ; device_id
+  7 => ir-batch,                   ; batch as received
+  ? 8 => ir-known,                 ; known
+}
+ir-version     = 1
+ir-received-at = ms
+ir-node        = tstr
+ir-path        = 0 / 1
+ir-gw          = serial
+ir-dev         = serial
+ir-device-id   = uint
+ir-batch       = bstr
+ir-known       = { * series => range-list }
