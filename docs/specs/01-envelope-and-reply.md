@@ -123,7 +123,7 @@ A **sample** is one record, one block or one event. Every sample has a sequence 
 
 1. Each series is a uint32 counter. A new incarnation starts every series at 0.
 2. A device assigns the next number at capture time, never at upload time.
-3. A sample keeps its number, its timestamp and its timebase forever. It MUST NOT be renumbered or re-stamped, even after the clock is set (§8).
+3. A sample keeps its number forever. Its timestamp and timebase are fixed **at its first transmission** and MUST NOT change after that, because the timestamp is part of the storage de-duplication key. Before its first transmission a device MAY convert an uptime timestamp to wall-clock time (§8).
 4. If any counter would wrap past 2³²−1 the device MUST start a new incarnation.
 
 ### 5.2 Surviving reboots
@@ -240,7 +240,9 @@ Allowances must not strand a backlog: backfill batches are counted against a sep
 - **Synced** (`tb = 0`): `t0 + dt` is the capture time in Unix ms by the device's clock.
 - **Uptime** (`tb = 1`): `t0 + dt` is milliseconds since boot number `boot`. An envelope MUST NOT mix boots or timebases; the device closes the batch instead.
 - Devices set their clock from a reply's `now` (spec 02 §3.5 for the gateway path), from the gateway's CoAP time, from SNTP or GNSS. When a device first sets its clock in a boot it SHOULD send a `time_sync` event.
-- Samples captured before the clock was set stay in the uptime timebase forever (§5.1 rule 3).
+- **The device timestamps its data (decided 14 Nov, C30).** A device MUST NOT transmit samples of a boot in the uptime timebase while that boot can still be synced. It holds them until the boot's first sync point (uptime `u`, wall-clock `w`), converts each to `w + (t − u)` and sends them with `tb = 0`. Conversion happens once, before first transmission (§5.1 rule 3), so a resend is byte-identical.
+- **A boot that ends without ever syncing** (power lost before any time source) cannot be converted. Its samples are sent with `tb = 1` after the next boot, so they are never lost (I1), and the platform stores them apart from the timeline (spec 06 §4.3): kept, attributable to the device and sequence, but not placed at a wall-clock time. Devices that must avoid this keep a real-time clock or persist the last known time.
+- The `time_sync` event is still sent once per boot when the clock is first set; it is now diagnostic, not the anchor.
 - **Anchoring.** The platform converts uptime times to wall-clock times with one anchor per `(dev, inc, boot)`, fixed the first time a worker sees that boot and never changed afterwards (spec 06 §4.3). The anchor comes from a `time_sync` event in that same envelope if there is one, otherwise from `received_at − (t0 + max dt)`. Anchored readings carry the `uptime_anchored` quality flag.
 
 > **Design note (C1).** The design doc anchors uptime timestamps "to the receive time". If each upload were anchored to its own receive time, a resent sample would get a different timestamp, and since the timestamp is part of the storage de-duplication key, duplicates would never merge. The anchor must be fixed per boot. This is the most serious defect found; see CONTRADICTIONS.md C1.
@@ -373,7 +375,7 @@ f403a3000c01485e0c1d2e3f40516202a10305
 }
 ```
 
-The samples are at 2,150 ms and 7,150 ms after boot 5. The first worker to see boot 5 of this incarnation fixes its anchor; both records get `ts = anchor + 2150` and `anchor + 7150` for ever, however many times they are resent.
+The samples are at 2,150 ms and 7,150 ms after boot 5. Since 14 Nov (C30) a device sends uptime samples only for a boot that ended without ever syncing, so this envelope is what such a boot's data looks like when sent after the next boot. The platform stores it off the timeline in `readings_unanchored` (spec 06 §4.3). The wire format is unchanged.
 
 Encoded, 117 bytes:
 

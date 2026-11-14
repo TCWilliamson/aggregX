@@ -86,13 +86,13 @@ Consumer group `wk-store` on `iot.ingest.v1`. Per message, in partition order:
 1. Decode the ingest record and the envelope. (The signature was verified by ingest; Redpanda is internal.)
 2. Resolve, using caches backed by PostgreSQL, each with first-write-wins upserts:
    - `inc_ordinal` (spec 05 §5),
-   - the boot anchor for uptime batches (§4.3),
+   - for an uptime batch (a boot that never synced), route its samples to `readings_unanchored` (§4.3),
    - module and sensor instance ids (spec 04 §5),
    - if `mres` contains an applied `move_boundary`: **flush the current batch** (steps 5–7), apply the move transaction (spec 05 §6.3), then continue,
    - the stream for each sample (spec 05 §5),
    - the retention class for each sample (§4.2).
 3. Validate against the registry (spec 04 §7). Failures go to `quarantine`.
-4. Build rows: `readings` (records, module records, block samples), `blocks`, `events`; observations for gap tracking; dirty rollup hours; latest values; mailbox results; reported config.
+4. Build rows: `readings` (records and module records only), `blocks` (one row per block, values as a compressed array; block samples are **not** expanded into `readings`, decided 14 Nov, C31), `events`, `readings_unanchored` (§4.3); observations for gap tracking; dirty rollup hours; latest values; mailbox results; reported config.
 5. Flush when 10,000 rows or 1 s have accumulated: insert into ClickHouse (synchronous inserts, `insert_deduplication_token = <table>:<partition>:<first offset>-<last offset>`).
 6. Then one PostgreSQL transaction: gap state, `rollup_dirty`, mailbox results, twin reported state, `stream_schemas`, metering.
 7. Then Redis: latest values (written only if newer than what is there), declared ranges.
@@ -112,7 +112,7 @@ Every column in a partition key or sorting key must be computable, identically, 
 | `sensor_instance_id` | Upsert on (module serial, channel key) | Unique constraint returns the same id |
 | `channel_id`, `series`, `seq`, `idx`, `event_type`, `slot` | The batch | Immutable bytes |
 | `inc_ordinal` | First-write-wins upsert | Never updated |
-| `ts`, `start_ts` | Synced: `t0 + dt` from the batch. Uptime: boot anchor + `t0 + dt` | Anchor is first-write-wins (§4.3) |
+| `ts`, `start_ts` | `t0 + dt` from the batch (always wall-clock; the device converts before first transmission, spec 01 §8) | Immutable bytes |
 | `retention_class` | Stream's class effective at the sample's `ts` (§4.2) | Effective-dated rows; changes apply from a future time |
 
 Any new key column must be added to this table with its justification, or the change is rejected in review.
@@ -125,7 +125,7 @@ Any new key column must be added to this table with its justification, or the ch
 
 ### 4.3 Boot anchors
 
-For an uptime batch, the worker looks up `boot_anchors(device_id, inc, boot)`. If absent it inserts one (`ON CONFLICT DO NOTHING`, then reads back): from a `time_sync` event in the same envelope if present, else `received_at − (t0 + max dt in the batch)`. The anchor is never updated. `ts = anchor + t0 + dt`.
+**Changed 14 Nov (C30).** Devices convert uptime timestamps to wall-clock time themselves before first transmission (spec 01 §8), so the platform no longer estimates anchors. An uptime (`tb = 1`) batch now means a boot that ended without ever syncing. Its samples are written to `readings_unanchored` (keyed by device, `inc`, `boot`, series, seq, idx; columns include `ts_dev` in uptime ms and `received_at`), not to `readings`. They are kept for the device's raw retention, visible per device and per boot, and excluded from timeline queries and rollups. They are counted in reconciliation as stored. *(Migration change pending: `readings_unanchored` replaces the boot-anchor path; `boot_anchors` is retired.)*
 
 > **Design note (C1).** This is the fix for the most serious defect found. See spec 01 §8.
 
@@ -133,7 +133,7 @@ For an uptime batch, the worker looks up `boot_anchors(device_id, inc, boot)`. I
 
 | Bit | Flag |
 |---:|---|
-| 0 | `uptime_anchored` |
+| 0 | `device_converted` (captured before sync, converted by the device from its boot's sync point, spec 01 §8) |
 | 1 | `out_of_range` |
 | 2 | `clock_future` (synced ts more than 5 min after receive) |
 | 3 | `backfill` (batch flag) |
@@ -180,7 +180,11 @@ Rollup rows are versioned by `computed_at`; readers use `FINAL`.
 
 ## 8. Late data and retention
 
-- Late-data window per retention class (`retention_classes.late_window_days`, default 30 days) is never longer than hot raw retention (enforced by a CHECK constraint). Samples older than the window are quarantined, so a late sample always lands next to the raw rows its rollup bucket needs.
+**Changed 14 Nov (C29): samples of any age are stored.** Age is never a reason to quarantine. Only impossible times are quarantined: more than 5 minutes in the future, or before the product's epoch.
+- **Within the late window** (`retention_classes.late_window_days`, default 30 days): stored normally; the rollup dirty-hour recompute (§7) runs as usual.
+- **Older than the late window but within raw retention:** stored normally in `readings`. Their rollup buckets are marked dirty in a separate low-priority queue, recomputed from raw rows by a slow late-path worker that is rate-limited so it never delays live data.
+- **Older than the class's raw retention:** the raw row would expire on insert, so it is not written to `readings`. The batch is in the archive (§10) as for every batch; the late-path worker recomputes the affected rollup buckets (which have longer retention) from the archive. Counted in reconciliation as `expired_on_arrival`, a declared outcome, never silent.
+- Inserting into old daily partitions costs extra merges; the slow path and its rate limit are what bound that cost. The 7-day, 45-day and 6-month backlog scenarios (spec 07 P6, customer scenarios 1, 6, 11) are the tests.
 - Expiry is by TTL with `ttl_only_drop_parts`: partitions are one retention class and one day, so whole parts expire together and are dropped, never rewritten.
 - Retention per tier (pilot): raw `standard` 400 days, raw `event` (bursts) and events indefinite, `rollup_1m` 400 days, `rollup_30m` 5 years, `rollup_1d` indefinite.
 
@@ -203,7 +207,7 @@ Rollup rows are versioned by `computed_at`; readers use `FINAL`.
 The simulator writes a journal of every sample it generated and every sample it declared dropped. Reconciliation passes if, after the system has drained:
 
 1. Every journalled sample not declared dropped appears **exactly once** in `readings FINAL` (or `events FINAL`) with the expected value, stream and sensor instance.
-2. For synced samples `ts` is exact. For uptime samples, all samples of one boot share one anchor (`ts − ts_dev` constant), and that anchor is within the configured tolerance of the simulator's true boot time.
+2. For every sample on the timeline `ts` is exactly what the device sent. Samples of never-synced boots are in `readings_unanchored`, each exactly once.
 3. No row exists that is not in the journal.
 4. Every unexplained-loss gap corresponds to a sample the fault injector actually destroyed in a way the device could not know about; there are no others.
 5. Rollups recomputed from scratch equal the stored rollups.

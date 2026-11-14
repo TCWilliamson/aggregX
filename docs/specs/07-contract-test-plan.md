@@ -104,10 +104,10 @@ The simulator (§6) drives these against the full stack. Each scenario runs with
 
 | Case | Injection | Must hold |
 |---|---|---|
-| T1 | Device with no clock for first 10 minutes of each boot (uptime batches), resends after syncing | Uptime samples keep uptime `ts_dev`; all of one boot share one anchor; resends merge |
+| T1 | Device with no clock for the first 10 minutes of each boot | Device holds pre-sync samples, converts them once at sync and sends `tb = 0` with `device_converted`; resends byte-identical and merge (spec 01 §8) |
 | T2 | Device clock 3 hours fast | Stored as sent, `clock_future` flagged; anchoring not applied |
 | T3 | Clock jumps backwards mid-batch | Ordering by seq preserved; `clock_jump` event stored |
-| T4 | Uptime backlog spanning three reboots | Three anchors; no cross-boot mixing |
+| T4 | Three boots, the middle one never synced, then a backlog upload | Boots 1 and 3 on the timeline at the device's converted times; boot 2 in `readings_unanchored`, exactly once; no cross-boot mixing |
 | T5 | Gateway feeds a wrong time while offline | Samples stored as sent; device and gateway flagged when skew is measurable |
 | T6 | Batch with a `time_sync` event as first contact of a boot | Anchor taken from the event, exactly |
 

@@ -36,9 +36,9 @@ Severity: **High** = would lose, duplicate or leak data, or open a security hole
 | C26 | Low | Revocation via Redis pub/sub | Improved (Redis Stream + version poll) |
 | C27 | Medium | Which CA devices trust for ingest TLS | Closed 14 Nov (own CA for devices, public CA for portal/API) |
 | C28 | Medium | Pilot hardware | **Proposed**, awaiting tom's confirmation |
-| C29 | High | Samples past the late window are acked, then quarantined: the device deletes data that is never stored | **Decision** (found by customer scenarios X1) |
-| C30 | High | Boot anchor for uptime backlogs is wrong and can never be corrected | **Decision** (customer scenarios X2) |
-| C31 | Medium | `readings` row volume scales with channel count; block samples as rows | **Decision**, needs benchmarks (customer scenarios X3) |
+| C29 | High | Samples past the late window are acked, then quarantined: the device deletes data that is never stored | Decided 14 Nov: store any age; slow late path (spec 06 §8) |
+| C30 | High | Boot anchor for uptime backlogs is wrong and can never be corrected | Decided 14 Nov: devices timestamp before sending; never-synced boots stored off-timeline (spec 01 §8, spec 06 §4.3) |
+| C31 | Medium | `readings` row volume scales with channel count; block samples as rows | Decided 14 Nov: block store; narrow rows for records, benchmark later |
 | C32 | High | Control uploads (only `mres`/`rcfg`) are never published, so move boundary results never reach a worker | Fix agreed in direction, spec text pending (research) |
 | C33 | High | `boot_skip`/`dropped` ranges are recorded as accepted, so later real data in those ranges is suppressed, contradicting spec 01 §5.2 | Fix agreed in direction, spec text pending (research) |
 | C34 | High | Spec 08 S1 row 14 discards samples after three 400/401 replies, contradicting spec 01 §7.1 (delete only on a verified ack); on the gateway path a poison batch is never reported and blocks the outbox | **Decision** (research) |
@@ -58,8 +58,9 @@ Severity: **High** = would lose, duplicate or leak data, or open a security hole
 | C48 | Medium | Migration runner has no lock, non-atomic bookkeeping, re-runs every ClickHouse file | Fix agreed in direction, spec text pending (research) |
 | C49 | Medium | C vector runner covers 11 of 30 vectors | Fix agreed in direction, spec text pending (research) |
 | C50 | High (hardware) | nRF52840 has lost Thread support on Nordic NCS main; internal flash leaves ~64 kB outbox and a nearly full OTA slot | Decided 14 Nov: nRF52840 stays a production target; plan below |
-| C51 | High (hardware) | One P-256 firmware key (spec 03 §9) is impossible: ESP32-S3 secure boot is RSA-3072 only; ESP32-H2 has an ECDSA secure-boot advisory | Fix agreed in direction, spec text pending (research) |
+| C51 | High (hardware) | One P-256 firmware key (spec 03 §9) is impossible on ESP32-S3 | Decided 14 Nov: native boot key scheme per chip family (spec 03 §9) |
 | C52 | High (test validity) | Dev Compose runs Redpanda in `dev-container` mode (no fsync), so I2 does not hold and fault tests of I2 on it are void | Fix agreed in direction, spec text pending (research) |
+| C53 | Medium | Asset / ownership model deferred to Phase 4, but customers' unit of interest is often not the device | Decided 14 Nov: asset and ownership model in Phase 1; spec to write |
 
 ## Details
 
@@ -360,7 +361,17 @@ Source: `/mnt/project-files/iot-platform/research/00-synthesis.md` §2–§3, ea
 3. **Security patches.** We own OpenThread and mbedTLS/PSA security fixes for the pinned branch: a monthly check of OpenThread and Zephyr advisories, with backports into our fork of the pinned tag. This is an ongoing cost to put in the roadmap.
 4. **External flash required.** Every nRF52840 product design includes external SPI NOR flash (size per product from its outage target; 2–8 MB typical). Layout: internal flash holds MCUboot, the primary image and the small key-value state; external flash holds the MCUboot secondary slot and the outbox. Keys never leave internal flash.
 5. **Size budget stays the floor.** `make c-size` already checks against the nRF52840; the budget grows to cover the whole SDK (encoder, COSE, outbox, OTA client) as each part is specified.
-6. **Customer note.** The existing customer's hardware must be checked: if their boards have no external flash, their outage target is limited to what 64 kB holds, and OTA headroom is tight. Needs their board details.
+6. **Customer note.** tom, 14 Nov: external flash is available. Board details still needed to size the outbox against their outage target.
 
 **Status:** decided; plan items 1–5 to be written into the device SDK and OTA specs.
+
+### Decisions of 14 Nov evening (tom)
+
+- **C29:** "why not store samples older than 30 days?" Agreed: samples of any age are stored; a slow, rate-limited late path recomputes rollups, from raw rows or, beyond raw retention, from the archive (spec 06 §8).
+- **C30:** "it's up to device to timestamp properly, or devise the timestamps before sending it to us." Devices hold a boot's samples until it syncs and convert before first transmission (spec 01 §5.1, §8). Data from a boot that never synced is still stored (I1 stands) but off the timeline in `readings_unanchored` (spec 06 §4.3).
+- **C31:** "we should support block store then." Block samples live only in `blocks`; records stay one row per value ("if the device needs a lot of rows, that's how it is"); the narrow-vs-arrays benchmark remains a capacity-planning task, not a blocker.
+- **C50 item 6:** external flash is available on the nRF52840 boards.
+- **C51:** "whatever the normal hardware is capable of." Each chip family uses its native secure-boot key scheme (spec 03 §9). Batch and reply signing stays ES256, which all three device chips support.
+- **C53:** asset and ownership hierarchy from the beginning (Phase 1), as its own spec.
+- **Multi-tenancy:** one system for all customers and device types (README).
 

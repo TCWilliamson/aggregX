@@ -21,7 +21,7 @@ Telemetry is never keyed by org. Every stored row carries a **data stream** id, 
 | Data stream | `streams`, `stream_owners`, `stream_retention`, `stream_schemas` | §3. |
 | Site | `sites`, `site_memberships` | Has a time zone. A device is at one site at a time. |
 | Group | `groups`, `group_memberships` | Static in the pilot. A device can be in many groups. |
-| Asset | `assets`, `asset_mountings`, `asset_locations` | The thing a device is fitted to. Tables exist from the start; used from Phase 4. |
+| Asset | `assets`, `asset_mountings`, `asset_locations` | The thing a device is fitted to (a shipper, a machine, a patient episode, an apartment, a gauge). **Brought forward to Phase 1 (decided 14 Nov, C53)**: customer scenarios show the unit customers care about is often not the device. Specified in a dedicated spec, to be written. |
 | Move | `moves` | §6. |
 | Mailbox item | `mailbox_items` | Spec 01 §7.2. |
 | Audit entry | `audit_log` | Append-only. |

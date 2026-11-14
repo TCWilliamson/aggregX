@@ -176,7 +176,7 @@ The portal, the API and anything a browser opens use certificates from a public 
 | Reply key (P-256) | Online, ingest | Per-device replies | Yearly, via `key_rollover` (spec 02 §5.2) | Devices (pinned, no chain) |
 | Factory CA (P-256) | Online, core | Jig certificates | 1 year | Core |
 | Device-ingress CA (P-256) | HSM | Ingest TLS server certificates | 10 years (pinned in firmware) | Devices, gateways |
-| Firmware key (P-256) | HSM, with offline escrow | Firmware images; also the secure-boot / MCUboot key | Effectively never: it is in device bootloaders | Devices, gateways |
+| Firmware keys, one set per chip family (decided 14 Nov, C51) | HSM, with offline escrow | Firmware images and secure boot, in each chip's native scheme: RSA-3072 for ESP32-S3 secure boot v2, ECDSA P-256 for ESP32-C6 and nRF52840/MCUboot, the nRF54L15's native MCUboot/KMU scheme; each with the revocation slots the chip offers | Effectively never: in device bootloaders | Devices, gateways |
 
 - The HSM signs only intermediates and firmware, so it never becomes a bottleneck.
 - Losing the firmware key is the one failure with no recovery. It has an offline escrow copy.

@@ -2,6 +2,8 @@
 
 Status: **Draft 1**, 14 Nov 2026. Written against the design doc *IoT Cloud Platform: Architecture & Scaling Design*, revision 44, and the independent review of revision 33.
 
+**One multi-tenant system** (confirmed 14 Nov): one platform serves every customer, product and device type at once, with tenancy enforced by the platform (spec 05), not one deployment per customer.
+
 These specs turn the design doc into contracts that code, firmware and tests can be written against. Where the design doc is ambiguous, wrong, or contradicts itself, the spec says so in a **Design note** box and the issue is logged in [CONTRADICTIONS.md](CONTRADICTIONS.md) with a proposed resolution. Nothing has been resolved silently.
 
 ## Documents
