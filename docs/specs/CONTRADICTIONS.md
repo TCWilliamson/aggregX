@@ -57,7 +57,7 @@ Severity: **High** = would lose, duplicate or leak data, or open a security hole
 | C47 | Medium | Rollups: live hour starved by the 60 s dirty rule; reading rollups without `FINAL` double-counts | Fix agreed in direction, spec text pending (research) |
 | C48 | Medium | Migration runner has no lock, non-atomic bookkeeping, re-runs every ClickHouse file | Fix agreed in direction, spec text pending (research) |
 | C49 | Medium | C vector runner covers 11 of 30 vectors | Fix agreed in direction, spec text pending (research) |
-| C50 | High (hardware) | nRF52840 has lost Thread support on Nordic NCS main; internal flash leaves ~64 kB outbox and a nearly full OTA slot | **Decision** (research) |
+| C50 | High (hardware) | nRF52840 has lost Thread support on Nordic NCS main; internal flash leaves ~64 kB outbox and a nearly full OTA slot | Decided 14 Nov: nRF52840 stays a production target; plan below |
 | C51 | High (hardware) | One P-256 firmware key (spec 03 §9) is impossible: ESP32-S3 secure boot is RSA-3072 only; ESP32-H2 has an ECDSA secure-boot advisory | Fix agreed in direction, spec text pending (research) |
 | C52 | High (test validity) | Dev Compose runs Redpanda in `dev-container` mode (no fsync), so I2 does not hold and fault tests of I2 on it are void | Fix agreed in direction, spec text pending (research) |
 
@@ -349,3 +349,18 @@ Source: `/mnt/project-files/iot-platform/research/00-synthesis.md` §2–§3, ea
 | C50 | High (hardware) | nRF52840 has lost Thread support on Nordic NCS main; internal flash leaves ~64 kB outbox and a nearly full OTA slot | **Decision** (research §2.1, §5 #1-2) |
 | C51 | High (hardware) | One P-256 firmware key (spec 03 §9) is impossible: ESP32-S3 secure boot is RSA-3072 only; ESP32-H2 has an ECDSA secure-boot advisory | Fix in spec 03 §9: per-chip-family boot key sets with revocation slots. Batch signing unaffected |
 | C52 | High (test validity) | Dev Compose runs Redpanda in `dev-container` mode (no fsync), so I2 does not hold and fault tests of I2 on it are void | Fix: production-mode Redpanda for fault tests; separate production Compose file |
+
+### C50. nRF52840 stays a production target (Decided 14 Nov)
+
+**tom, 14 Nov:** "We will support nrf52 as customer already uses it." The facts it has to work around (research report 05 §1, §3.5, verified against Nordic's changelog by two agents): NCS `main` removed OpenThread for nRF52 SoCs, and v3.4 is the last branch that lists it; with internal flash only, a dual-slot OTA layout leaves about a 64 kB outbox (about 72 minutes for the first product at 5 s sampling) and a slot 86–93 % full at first release.
+
+**Plan (proposed; each step becomes spec or test work):**
+1. **Toolchain pin.** The nRF52840 port builds against a pinned NCS v3.4.x tag, recorded in the build manifest with a hash. It has its own CI job that builds and runs the SDK tests for that target on every change, so a core change that breaks the pinned port fails immediately.
+2. **Second route kept open.** In Phase 0, build the same port against upstream Zephyr's OpenThread module (not NCS). If it works and passes the same tests, it becomes the long-term route, because upstream still receives OpenThread fixes. To be measured, not assumed.
+3. **Security patches.** We own OpenThread and mbedTLS/PSA security fixes for the pinned branch: a monthly check of OpenThread and Zephyr advisories, with backports into our fork of the pinned tag. This is an ongoing cost to put in the roadmap.
+4. **External flash required.** Every nRF52840 product design includes external SPI NOR flash (size per product from its outage target; 2–8 MB typical). Layout: internal flash holds MCUboot, the primary image and the small key-value state; external flash holds the MCUboot secondary slot and the outbox. Keys never leave internal flash.
+5. **Size budget stays the floor.** `make c-size` already checks against the nRF52840; the budget grows to cover the whole SDK (encoder, COSE, outbox, OTA client) as each part is specified.
+6. **Customer note.** The existing customer's hardware must be checked: if their boards have no external flash, their outage target is limited to what 64 kB holds, and OTA headroom is tight. Needs their board details.
+
+**Status:** decided; plan items 1–5 to be written into the device SDK and OTA specs.
+
