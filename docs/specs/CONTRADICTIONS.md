@@ -46,7 +46,7 @@ Severity: **High** = would lose, duplicate or leak data, or open a security hole
 | C36 | High | Move boundary vector omits series of a removed module, so its backlog routes to the new org; unclaim-to-reclaim data goes to the next owner | **Decision** (research) |
 | C37 | High | Block sensor instance resolved from "the most recent composition event" makes a key column depend on processing order (breaks I5) | Fix agreed in direction, spec text pending (research) |
 | C38 | High | Schema major versions may change a channel id's type or unit, but stored rows carry no schema version | Fix agreed in direction, spec text pending (research) |
-| C39 | High (security) | Nothing sits above the online reply key: `key_rollover` is authorised only by the key it replaces; theft captures the fleet, loss strands it | **Decision** (research) |
+| C39 | High (security) | Nothing sits above the online reply key | Decided 14 Nov: offline root key pinned in firmware |
 | C40 | High (security) | Gateway `poll` is unauthenticated: any gateway can read any device's mailbox items; replaying an old batch also returns a full signed reply | Fix agreed in direction, spec text pending (research) |
 | C41 | High | A Thread device never receives a signed refusal (unclaimed, revoked, throttled), so spec 08 `HELD` is unreachable on the gateway path | Fix agreed in direction, spec text pending (research) |
 | C42 | High (security) | Alert evaluation on the raw ingest topic can leak data across tenants after a move | Fix agreed in direction, spec text pending (research) |
@@ -61,6 +61,7 @@ Severity: **High** = would lose, duplicate or leak data, or open a security hole
 | C51 | High (hardware) | One P-256 firmware key (spec 03 §9) is impossible on ESP32-S3 | Decided 14 Nov: native boot key scheme per chip family (spec 03 §9) |
 | C52 | High (test validity) | Dev Compose runs Redpanda in `dev-container` mode (no fsync), so I2 does not hold and fault tests of I2 on it are void | Fix agreed in direction, spec text pending (research) |
 | C53 | Medium | Asset / ownership model deferred to Phase 4, but customers' unit of interest is often not the device | Decided 14 Nov: asset and ownership model in Phase 1; spec to write |
+| C54 | High | No way to bring a device back after a trust failure or total memory loss | Decided in principle 14 Nov: field recovery over serial (spec 03 §11, Draft) |
 
 ## Details
 
@@ -374,4 +375,6 @@ Source: `/mnt/project-files/iot-platform/research/00-synthesis.md` §2–§3, ea
 - **C51:** "whatever the normal hardware is capable of." Each chip family uses its native secure-boot key scheme (spec 03 §9). Batch and reply signing stays ES256, which all three device chips support.
 - **C53:** asset and ownership hierarchy from the beginning (Phase 1), as its own spec.
 - **Multi-tenancy:** one system for all customers and device types (README).
+- **C39:** "we should support an offline rootkey, yes." An offline root key, pinned in every device at manufacture, endorses the online reply-signing keys and signs trust-anchor bundles (spec 03 §11.2 rule 3). Endorsements must be verifiable by a device holding only the root.
+- **C54 (new requirement):** customers can bring devices back onto the platform by hand after a catastrophic security failure or complete memory loss, via a web app over serial. Principles and open questions in spec 03 §11; flow F18 in spec 08.
 

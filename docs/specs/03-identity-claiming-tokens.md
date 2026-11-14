@@ -194,3 +194,53 @@ The portal, the API and anything a browser opens use certificates from a public 
 | Stale revocation state in a pod | Fail closed after 60 s (§8) |
 | Algorithm confusion | Algorithm pinned per key; `none` and HMAC never accepted |
 | Compromised gateway | Spec 02 §5 |
+| Recovery tool used to hijack a device | §11.4: recovery never changes ownership; needs physical access, the owning org's authenticated session and a device-shown code |
+
+## 11. Field recovery (Draft, decided in principle 14 Nov, C54)
+
+**Requirement (tom, 14 Nov):** customers must be able to bring a device back onto the platform by hand after a catastrophic security failure (for example a compromised cloud root) or after the device has lost all of its memory, probably with a web app talking to the device over serial.
+
+This section fixes the principles and the open questions. The detailed protocol is written with the OTA and bootloader spec, because recovery lives in the same protected code.
+
+### 11.1 Two cases
+
+| Case | What the device still has | What recovery must restore |
+|---|---|---|
+| **A. Trust failure** | Its identity key; possibly compromised or outdated trust anchors (reply root, ingress CA, firmware) | New trust anchors and, usually, new firmware |
+| **B. Memory loss** | Only what is fused into the chip (eFuse, KMU, immutable bootloader) | Firmware, configuration and, if the identity key was in ordinary flash, a new identity |
+
+### 11.2 Principles
+
+1. **Physical presence only.** Recovery mode is entered by a physical action at boot (button held, or a USB connection plus a key sequence), never by a network message. A device in recovery mode does nothing else and leaves it on a timeout.
+2. **The browser is an untrusted relay**, like a gateway (spec 02 §5). The web app carries messages between the device (Web Serial over USB) and the cloud (HTTPS). Everything the device accepts is signed by us; everything the cloud accepts from the device is signed by the device or tied to a fresh challenge. A malicious page or laptop can block recovery but cannot fake it.
+3. **Only our keys authorise new trust.** New firmware is accepted only if signed by the chip family's firmware key (spec 03 §9), checked by the bootloader whose key hash is fused into the chip. New trust anchors (reply root, ingress CA) come in a bundle signed by the **offline root** (C39), which every device has pinned since manufacture, separate from the online reply key. A cloud compromise therefore cannot be used to push a hostile "recovery".
+4. **Identity survives memory loss wherever the chip allows.** Where the chip holds a hardware secret that ordinary flash erasure cannot touch, the device identity key is derived from it or stored in it: ESP32-C6 (HMAC eFuse key or digital-signature peripheral), nRF54L15 (KMU). Then case B restores firmware and configuration, and the device comes back as the same identity. *To verify per chip in the device SDK spec.* The nRF52840 has no such store, so case B there needs re-registration (§11.3).
+5. **Recovery never changes ownership.** A recovered device returns to the org that owned it, with the same serial. Transferring a device is a separate, authorised move (spec 05). An unclaimed device recovers as unclaimed.
+
+### 11.3 Re-registration when the identity key is lost (nRF52840, or a destroyed key store)
+
+1. The device generates a new key pair in recovery mode and shows a short confirmation code derived from the new public key.
+2. A user of the owning org, logged in to the portal with the `devices:recover` permission, starts recovery for that serial in the web app and enters the code shown by the device.
+3. The cloud checks the request against what the factory recorded for that serial: the chip's unique hardware id, read by the device and signed with the new key over a fresh cloud challenge. *Open: the strength of this proof per chip (Q-R2).*
+4. Core revokes the old key, registers the new one, bumps the credential version (§8) and starts a new incarnation (spec 01 §5.3). The device keeps its serial, org and streams.
+5. Everything is written to the audit log and notified to the org's admins. Each serial has a rate limit on recoveries.
+
+### 11.4 What stops abuse
+
+| Attack | Defence |
+|---|---|
+| Thief recovers a stolen device into their own org | §11.2 rule 5: recovery cannot change ownership; the thief would need the owner's portal login with `devices:recover` |
+| Malicious web page or laptop pushes firmware | Bootloader accepts only images signed by our firmware key (rule 3) |
+| Compromised cloud pushes new trust anchors to the fleet | Trust bundles need the offline root; the online reply key cannot sign them |
+| Attacker clones a device's identity onto other hardware | Re-registration (§11.3) binds the new key to the chip's hardware id from the factory record; one active key per serial |
+| Insider at the customer re-keys devices silently | Audit log, admin notification, rate limit, separate permission |
+
+### 11.5 Open questions
+
+| # | Question | Proposed direction |
+|---|---|---|
+| Q-R1 | Transport: Web Serial (Chromium-based browsers only) versus a small native tool | Web Serial first, with the same protocol in a CLI for other platforms and for factory use |
+| Q-R2 | How strong is the chip-id proof on each chip? Can the nRF52840's id be read and spoofed with physical access? | Treat it as weak on the nRF52840 and lean on the owner's session and audit; settle in the device SDK spec |
+| Q-R3 | Which bootloader stage carries the serial recovery protocol? ESP ROM download mode should be disabled or restricted to secure download mode in production; MCUboot has a serial recovery mode (SMP) | Use the protected second-stage bootloader on each chip; settle in the OTA and bootloader spec |
+| Q-R4 | Case A for the whole fleet (root compromise): is hands-on recovery of every device acceptable, or must the offline root also be able to rotate trust remotely? | Offline root can sign a remote trust rotation; field recovery is the fallback for devices that cannot receive it |
+| Q-R5 | Gateways: same mechanism? | Yes, with the gateway's own firmware keys; specify with the gateway spec |

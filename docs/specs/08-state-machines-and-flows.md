@@ -102,6 +102,7 @@ Each flow becomes a sequence diagram (Mermaid `sequenceDiagram`) with every part
 | F15 | Factory reset of a claimed device | Device, ingest, workers | Prose (spec 01 §5.3) |
 | F16 | Reply key rollover | Core, ingest, devices | Prose (spec 02 §5.2) |
 | F17 | Gateway replacement | Installer, core, devices | Gap |
+| F18 | Field recovery over serial (trust failure; memory loss and re-registration) | Customer admin, web app, device bootloader, core | Gap (spec 03 §11, Draft) |
 
 ## 4. S1: Device runtime (worked example)
 
